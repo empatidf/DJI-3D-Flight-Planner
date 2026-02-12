@@ -43,19 +43,13 @@ export interface Mission {
 export interface Layer {
   id: string;
   name: string;
-  type: 'basemap' | 'terrain' | 'mission' | 'kml' | 'overlay' | 'rgb' | 'dsm';
+  type: 'basemap' | 'terrain' | 'mission' | 'kml' | 'overlay' | 'cesium-ion';
   visible: boolean;
   opacity: number;
   data?: any;
   url?: string; // URL for external imagery/data sources
-  imageUrl?: string; // Data URL for RGB/DSM image data
-  geoTiffInfo?: {
-    bounds: { minLon: number; minLat: number; maxLon: number; maxLat: number };
-    epsg: string;
-    fileName: string;
-    minZoom?: number;
-    maxZoom?: number;
-  };
+  cesiumAssetId?: number; // Cesium Ion asset ID
+  cesiumAssetType?: 'IMAGERY' | 'TERRAIN' | '3DTILES'; // Cesium Ion asset type
 }
 
 export interface CameraTarget {
@@ -86,7 +80,6 @@ interface MissionStore {
   addLayer: (layer: Omit<Layer, 'id'>) => void;
   updateLayer: (id: string, updates: Partial<Layer>) => void;
   deleteLayer: (id: string) => void;
-  deleteLayerWithTiles: (id: string) => Promise<void>;
   toggleLayerVisibility: (id: string) => void;
   
   // View actions
@@ -135,16 +128,33 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
   },
 
   updateMission: (id, updates) => {
-    console.log('updateMission called:', { id, updates });
+    console.log('=== UPDATE MISSION CALLED ===');
+    console.log('Mission ID:', id);
+    console.log('Updates:', updates);
+    console.log('Flight lines in updates:', updates.flightLines?.length);
+    
     set((state) => {
+      const oldMissions = state.missions;
+      console.log('Old missions array reference:', oldMissions);
+      console.log('Old missions length:', oldMissions.length);
+      
       const updatedMissions = state.missions.map((m) =>
         m.id === id ? { ...m, ...updates, updatedAt: new Date() } : m
       );
+      
+      console.log('New missions array reference:', updatedMissions);
+      console.log('References are different:', oldMissions !== updatedMissions);
       console.log('Updated missions:', updatedMissions);
+      
+      const updatedMission = updatedMissions.find(m => m.id === id);
+      console.log('Updated mission flight lines:', updatedMission?.flightLines?.length);
+      
       return {
         missions: updatedMissions,
       };
     });
+    
+    console.log('=== UPDATE MISSION COMPLETE ===');
   },
 
   deleteMission: (id) => {
@@ -190,22 +200,6 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
     set((state) => ({
       layers: state.layers.filter((l) => l.id !== id),
     }));
-  },
-
-  deleteLayerWithTiles: async (id) => {
-    // Delete from store
-    set((state) => ({
-      layers: state.layers.filter((l) => l.id !== id),
-    }));
-    
-    // Delete tile directory
-    try {
-      await fetch(`/api/tile/${id}`, {
-        method: 'DELETE',
-      });
-    } catch (error) {
-      console.error('Failed to delete tiles:', error);
-    }
   },
 
   toggleLayerVisibility: (id) => {

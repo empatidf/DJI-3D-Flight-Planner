@@ -8,22 +8,19 @@ import {
   Viewer,
   Ion,
   IonImageryProvider,
+  CesiumTerrainProvider,
   createWorldTerrainAsync,
   SceneMode,
   Cartesian3,
-  Cartesian2,
   Math as CesiumMath,
   Color,
-  PolygonHierarchy,
   Entity,
   EllipsoidTerrainProvider,
-  UrlTemplateImageryProvider,
-  Rectangle,
   ImageryLayer,
-  WebMercatorTilingScheme,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
+import { sampleTerrainForWaypoints } from '../lib/terrain-sampler';
 
 // Set Cesium Ion access token
 Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJhYjM3ZjBkMy0wZWFiLTQzNzYtYjk5Zi1mZDU4NzZhZGZkMmUiLCJpZCI6Mzg5Nzk1LCJpYXQiOjE3NzA4NTExMzd9.LATM9S0nkja1YrqNanCBDYhse2_bX-CqIa5rgkhIXNQ';
@@ -71,7 +68,8 @@ export const CesiumMap = () => {
 
     // Configure scene for better 3D terrain visualization
     viewer.scene.globe.enableLighting = false;
-    viewer.scene.globe.depthTestAgainstTerrain = true;
+    // Disable depth test so flight lines are always visible, even with terrain loaded
+    viewer.scene.globe.depthTestAgainstTerrain = false;
     viewer.scene.globe.tileCacheSize = 1000;
     
     // Enable terrain exaggeration for better visibility (2x exaggeration)
@@ -88,6 +86,10 @@ export const CesiumMap = () => {
     });
 
     viewerRef.current = viewer;
+    
+    // Store viewer globally for terrain sampling access
+    // @ts-ignore
+    window.cesiumViewer = viewer;
 
     // Cleanup
     return () => {
@@ -185,32 +187,38 @@ export const CesiumMap = () => {
     });
     entitiesToRemove.forEach((entity) => viewer.entities.remove(entity));
 
-    // Add polygons for visible missions with AOI
-    missions.forEach((mission) => {
+    // Add polygons for visible missions with AOI - async for terrain sampling
+    missions.forEach(async (mission) => {
       if (!mission.visible || !mission.aoi) return;
 
       const coordinates = mission.aoi.coordinates;
       if (coordinates.length < 3) return;
 
-      // Use mission altitude for polygon elevation
+      // Use mission altitude for polygon elevation (AGL)
       const missionAltitude = mission.parameters.altitude;
 
-      // Convert coordinates to Cartesian3 positions at mission altitude
-      const positions = coordinates.map(coord =>
-        Cartesian3.fromDegrees(coord[0], coord[1], missionAltitude)
+      // Sample terrain and create positions with terrain-following
+      const waypointsWithAltitude = coordinates.map(coord => [coord[0], coord[1], missionAltitude]);
+      const terrainAdjustedPoints = await sampleTerrainForWaypoints(viewer, waypointsWithAltitude, missionAltitude);
+      
+      // Convert coordinates to Cartesian3 positions with terrain-following altitudes
+      const positions = terrainAdjustedPoints.map(coord =>
+        Cartesian3.fromDegrees(coord[0], coord[1], coord[2])
       );
 
-      // Add polygon entity at mission altitude - outline only
+      // Add polygon entity at terrain-following altitude - using polyline for better visibility
+      // Close the polygon by adding first point at end
+      const closedPositions = [...positions, positions[0]];
+      
       viewer.entities.add({
         id: `mission-aoi-${mission.id}`,
         name: mission.aoi.name,
-        polygon: {
-          hierarchy: new PolygonHierarchy(positions),
-          fill: false, // No fill, outline only
-          outline: true,
-          outlineColor: Color.CYAN,
-          outlineWidth: 3,
-          height: missionAltitude, // Polygon floor at mission altitude
+        polyline: {
+          positions: closedPositions,
+          width: 3,
+          material: Color.CYAN,
+          clampToGround: false,
+          arcType: 0, // NONE - straight lines
         },
       });
     });
@@ -218,143 +226,75 @@ export const CesiumMap = () => {
     // Dependencies include missions array - any change triggers immediate re-render
   }, [missions]);
 
-  // Render RGB/DSM tiled imagery layers
+  // Render imagery layers (RGB/DSM/Cesium Ion)
   useEffect(() => {
     if (!viewerRef.current) return;
 
     const viewer = viewerRef.current;
     
-    // Remove existing RGB/DSM imagery layers
+    // Remove existing custom imagery layers
     const layersToRemove: ImageryLayer[] = [];
     for (let i = 0; i < viewer.imageryLayers.length; i++) {
       const imageryLayer = viewer.imageryLayers.get(i);
       // @ts-ignore - accessing custom property
-      if (imageryLayer._customLayerId && imageryLayer._customLayerId.startsWith('geotiff-')) {
+      if (imageryLayer._customLayerId) {
         layersToRemove.push(imageryLayer);
       }
     }
     layersToRemove.forEach((layer) => viewer.imageryLayers.remove(layer));
 
-    // Add tiled imagery layers for visible RGB/DSM layers
-    layers.forEach((layer) => {
-      if (!layer.visible || !layer.geoTiffInfo || !layer.url) return;
-      if (layer.type !== 'rgb' && layer.type !== 'dsm') return;
-
-      const bounds = layer.geoTiffInfo.bounds;
+    // Add imagery layers for visible layers
+    layers.forEach(async (layer) => {
+      if (!layer.visible) return;
       
-      // Create rectangle from bounds
-      const rectangle = Rectangle.fromDegrees(
-        bounds.minLon,
-        bounds.minLat,
-        bounds.maxLon,
-        bounds.maxLat
-      );
-
-      // Create tiled imagery provider with zoom level configuration
-      const provider = new UrlTemplateImageryProvider({
-        url: layer.url,
-        rectangle: rectangle,
-        tilingScheme: new WebMercatorTilingScheme(),
-        minimumLevel: layer.geoTiffInfo.minZoom || 0,
-        maximumLevel: layer.geoTiffInfo.maxZoom || 22,
-      });
-
-      // Add to viewer
-      const imageryLayer = viewer.imageryLayers.addImageryProvider(provider);
+      let imageryLayer: ImageryLayer | null = null;
       
-      // Store custom ID for removal
-      // @ts-ignore - adding custom property
-      imageryLayer._customLayerId = `geotiff-${layer.id}`;
-      
-      // Set opacity
-      imageryLayer.alpha = layer.opacity;
-      
-      // Move RGB/DSM layers to top (above basemap and labels)
-      viewer.imageryLayers.raise(imageryLayer);
-      
-      console.log(`Added ${layer.type.toUpperCase()} tiled imagery layer: ${layer.name}`);
-    });
-  }, [layers]);
-
-  // Render RGB/DSM layer coverage areas
-  useEffect(() => {
-    if (!viewerRef.current) return;
-
-    const viewer = viewerRef.current;
-    
-    // Remove existing layer coverage entities
-    const entitiesToRemove: Entity[] = [];
-    viewer.entities.values.forEach((entity) => {
-      if (entity.id.startsWith('layer-coverage-')) {
-        entitiesToRemove.push(entity);
+      // Handle Cesium Ion assets
+      if (layer.type === 'cesium-ion' && layer.cesiumAssetId) {
+        try {
+          // Handle TERRAIN assets differently from IMAGERY
+          if (layer.cesiumAssetType === 'TERRAIN') {
+            const terrainProvider = await CesiumTerrainProvider.fromIonAssetId(layer.cesiumAssetId);
+            viewer.terrainProvider = terrainProvider;
+            console.log(`Applied Cesium Ion TERRAIN: ${layer.name} (Asset: ${layer.cesiumAssetId})`);
+            // Terrain doesn't use imagery layers, so skip the rest
+            return;
+          } else {
+            // IMAGERY or 3DTILES - use IonImageryProvider
+            const provider = await IonImageryProvider.fromAssetId(layer.cesiumAssetId);
+            imageryLayer = viewer.imageryLayers.addImageryProvider(provider);
+            console.log(`Added Cesium Ion ${layer.cesiumAssetType || 'IMAGERY'} layer: ${layer.name} (Asset: ${layer.cesiumAssetId})`);
+          }
+        } catch (error) {
+          console.error(`Failed to load Cesium Ion asset ${layer.cesiumAssetId}:`, error);
+          return;
+        }
       }
-    });
-    entitiesToRemove.forEach((entity) => viewer.entities.remove(entity));
-
-    // Add coverage rectangles for visible RGB/DSM layers
-    layers.forEach((layer) => {
-      if (!layer.visible || !layer.geoTiffInfo) return;
-      if (layer.type !== 'rgb' && layer.type !== 'dsm') return;
-
-      const bounds = layer.geoTiffInfo.bounds;
+      // Future: Add support for other layer types here
       
-      // Create rectangle corners
-      const positions = [
-        Cartesian3.fromDegrees(bounds.minLon, bounds.minLat, 0),
-        Cartesian3.fromDegrees(bounds.maxLon, bounds.minLat, 0),
-        Cartesian3.fromDegrees(bounds.maxLon, bounds.maxLat, 0),
-        Cartesian3.fromDegrees(bounds.minLon, bounds.maxLat, 0),
-      ];
-
-      // Color coding: green for RGB, purple for DSM
-      const color = layer.type === 'rgb' ? Color.GREEN : Color.PURPLE;
-
-      // Add coverage outline
-      viewer.entities.add({
-        id: `layer-coverage-${layer.id}`,
-        name: `${layer.name} Coverage`,
-        polygon: {
-          hierarchy: new PolygonHierarchy(positions),
-          fill: true,
-          material: color.withAlpha(0.2), // Semi-transparent fill
-          outline: true,
-          outlineColor: color,
-          outlineWidth: 4,
-          height: 0,
-        },
-      });
-      
-      // Add label at center
-      const centerLon = (bounds.minLon + bounds.maxLon) / 2;
-      const centerLat = (bounds.minLat + bounds.maxLat) / 2;
-      
-      viewer.entities.add({
-        id: `layer-label-${layer.id}`,
-        position: Cartesian3.fromDegrees(centerLon, centerLat, 50),
-        label: {
-          text: `${layer.type.toUpperCase()}: ${layer.name}\\n${layer.geoTiffInfo.epsg}`,
-          font: '14px sans-serif',
-          fillColor: Color.WHITE,
-          outlineColor: Color.BLACK,
-          outlineWidth: 2,
-          style: 0, // FILL
-          verticalOrigin: 1, // CENTER
-          pixelOffset: new Cartesian2(0, 0),
-          showBackground: true,
-          backgroundColor: color.withAlpha(0.7),
-          backgroundPadding: new Cartesian2(8, 4),
-        },
-      });
+      if (imageryLayer) {
+        // Store custom ID for removal
+        // @ts-ignore - adding custom property
+        imageryLayer._customLayerId = `custom-${layer.id}`;
+        
+        // Set opacity (transparency slider)
+        imageryLayer.alpha = layer.opacity;
+        
+        // Move custom layers to top (above basemap and labels)
+        viewer.imageryLayers.raise(imageryLayer);
+      }
     });
   }, [layers]);
 
   // Render flight lines and waypoints
   useEffect(() => {
-    console.log('Flight line rendering effect triggered');
+    console.log('=== FLIGHT LINE RENDERING EFFECT TRIGGERED ===');
     console.log('Missions array:', missions);
+    console.log('Missions length:', missions.length);
+    console.log('Missions with flight lines:', missions.filter(m => m.flightLines && m.flightLines.length > 0).length);
     
     if (!viewerRef.current) {
-      console.log('No viewer ref');
+      console.log('No viewer ref - skipping render');
       return;
     }
 
@@ -373,16 +313,32 @@ export const CesiumMap = () => {
     // Add flight lines for visible missions
     let totalLinesRendered = 0;
     missions.forEach((mission) => {
-      console.log(`Checking mission ${mission.id}: visible=${mission.visible}, hasFlightLines=${!!mission.flightLines}, numLines=${mission.flightLines?.length || 0}`);
+      console.log(`Mission ${mission.name} (${mission.id}):`, {
+        visible: mission.visible,
+        hasFlightLines: !!mission.flightLines,
+        numLines: mission.flightLines?.length || 0,
+        flightLines: mission.flightLines
+      });
       
-      if (!mission.visible || !mission.flightLines || mission.flightLines.length === 0) return;
+      if (!mission.visible) {
+        console.log(`  Skipping ${mission.name} - not visible`);
+        return;
+      }
+      
+      if (!mission.flightLines || mission.flightLines.length === 0) {
+        console.log(`  Skipping ${mission.name} - no flight lines`);
+        return;
+      }
 
-      console.log(`Rendering flight lines for mission ${mission.id}: ${mission.flightLines.length} lines`);
+      console.log(`Rendering flight lines for mission ${mission.name}: ${mission.flightLines.length} lines`);
       
       const missionAltitude = mission.parameters.altitude;
 
       mission.flightLines.forEach((line, lineIndex) => {
-        if (line.coordinates.length < 2) return;
+        if (line.coordinates.length < 2) {
+          console.log(`  Skipping line ${lineIndex} - insufficient coordinates`);
+          return;
+        }
 
         console.log(`  Line ${lineIndex}: ${line.coordinates.length} waypoints, first coord:`, line.coordinates[0]);
 
@@ -391,7 +347,7 @@ export const CesiumMap = () => {
           Cartesian3.fromDegrees(coord[0], coord[1], coord[2] || missionAltitude)
         );
         
-        console.log(`  Positions for line ${lineIndex}:`, positions.length, 'positions created');
+        console.log(`  Creating polyline with ${positions.length} positions`);
 
         const polylineEntity = viewer.entities.add({
           id: `flight-line-${mission.id}-${lineIndex}`,
@@ -405,7 +361,7 @@ export const CesiumMap = () => {
           },
         });
         
-        console.log(`  Created polyline entity:`, polylineEntity.id);
+        console.log(`  ✓ Created polyline entity: ${polylineEntity.id}`);
         totalLinesRendered++;
 
         // Add waypoint markers
@@ -422,14 +378,14 @@ export const CesiumMap = () => {
               color: isPhotoPoint ? Color.RED : Color.YELLOW,
               outlineColor: Color.WHITE,
               outlineWidth: 2,
-              heightReference: 0, // NONE - use absolute heights
+              disableDepthTestDistance: Number.POSITIVE_INFINITY, // Always visible
             },
           });
         });
       });
     });
     
-    console.log(`Total flight lines rendered: ${totalLinesRendered}`);
+    console.log(`=== RENDER COMPLETE: ${totalLinesRendered} flight lines rendered ===`);
     console.log(`Total entities in viewer: ${viewer.entities.values.length}`);
   }, [missions]);
 

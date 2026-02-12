@@ -9,6 +9,7 @@ import { calculateFlightPlan } from '../lib/flight-calculations';
 import { useMissionStore } from '../stores/mission-store';
 import { importKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
+import { getCesiumViewer, sampleTerrainForWaypoints } from '../lib/terrain-sampler';
 import './FlightPlanner.css';
 
 export const FlightPlanner = () => {
@@ -176,7 +177,7 @@ export const FlightPlanner = () => {
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
-  const handleGenerateFlightPlan = () => {
+  const handleGenerateFlightPlan = async () => {
     if (!activeMissionId || !activeMission?.aoi) {
       setStatusMessage('Please import KML or draw an area first');
       setTimeout(() => setStatusMessage(''), 3000);
@@ -215,14 +216,35 @@ export const FlightPlanner = () => {
 
       console.log('Flight plan result:', flightPlanResult);
 
-      // Convert FlightLine format to match mission store format
-      const convertedLines = flightPlanResult.lines.map((line) => ({
-        id: line.id,
-        coordinates: line.waypoints.map(wp => [wp.lon, wp.lat, wp.alt]),
-        photoPoints: line.waypoints.filter(wp => wp.action === 'photo').map(wp => [wp.lon, wp.lat, wp.alt]),
-      }));
+      // Get Cesium viewer for terrain sampling
+      const viewer = getCesiumViewer();
+      
+      // Convert FlightLine format and apply terrain-following
+      const convertedLines = await Promise.all(
+        flightPlanResult.lines.map(async (line) => {
+          const waypoints = line.waypoints.map(wp => [wp.lon, wp.lat, wp.alt]);
+          
+          // Apply terrain-following if terrain data is available
+          const terrainWaypoints = viewer 
+            ? await sampleTerrainForWaypoints(viewer, waypoints, altitude)
+            : waypoints;
+          
+          const photoPoints = line.waypoints
+            .filter(wp => wp.action === 'photo')
+            .map((wp) => {
+              const wpIndex = line.waypoints.indexOf(wp);
+              return terrainWaypoints[wpIndex];
+            });
+          
+          return {
+            id: line.id,
+            coordinates: terrainWaypoints,
+            photoPoints: photoPoints,
+          };
+        })
+      );
 
-      console.log('Converted lines:', convertedLines);
+      console.log('Converted lines with terrain-following:', convertedLines);
       console.log('Active mission before update:', activeMission);
 
       updateMission(activeMissionId, {
