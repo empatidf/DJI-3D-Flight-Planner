@@ -8,8 +8,31 @@ import { useMissionStore } from '../stores/mission-store';
 import { fetchCesiumAssets, filterImageryAssets, getAssetMetadata, validateCesiumToken, type CesiumIonAsset } from '../lib/cesium-ion-api';
 import './LayerManager.css';
 
+const areLayersEquivalent = (a: ReturnType<typeof useMissionStore.getState>['layers'], b: ReturnType<typeof useMissionStore.getState>['layers']) => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+
+  return a.every((layerA, index) => {
+    const layerB = b[index];
+    if (!layerB) return false;
+
+    return (
+      layerA.id === layerB.id &&
+      layerA.name === layerB.name &&
+      layerA.type === layerB.type &&
+      layerA.visible === layerB.visible &&
+      layerA.opacity === layerB.opacity &&
+      layerA.url === layerB.url &&
+      layerA.cesiumAssetId === layerB.cesiumAssetId &&
+      layerA.cesiumAssetType === layerB.cesiumAssetType
+    );
+  });
+};
+
 export const LayerManager = () => {
   const layers = useMissionStore((state) => state.layers);
+  const activeMissionId = useMissionStore((state) => state.activeMissionId);
+  const updateMission = useMissionStore((state) => state.updateMission);
   const viewMode = useMissionStore((state) => state.viewMode);
   const toggleLayerVisibility = useMissionStore((state) => state.toggleLayerVisibility);
   const updateLayer = useMissionStore((state) => state.updateLayer);
@@ -96,6 +119,24 @@ export const LayerManager = () => {
     };
     loadAssets();
   }, [cesiumToken]);
+
+  React.useEffect(() => {
+    if (!activeMissionId) return;
+
+    const currentMission = useMissionStore
+      .getState()
+      .missions.find((mission) => mission.id === activeMissionId);
+
+    const nextSnapshot = layers.map((layer) => ({ ...layer }));
+
+    if (currentMission?.layerSnapshot && areLayersEquivalent(currentMission.layerSnapshot, nextSnapshot)) {
+      return;
+    }
+
+    updateMission(activeMissionId, {
+      layerSnapshot: nextSnapshot,
+    });
+  }, [layers, activeMissionId, updateMission]);
 
   const handleAddCesiumAsset = async () => {
     if (!selectedAssetId) {

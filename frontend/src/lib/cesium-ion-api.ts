@@ -92,7 +92,7 @@ export async function getAssetMetadata(assetId: number, accessToken: string) {
  * Filter assets for imagery and terrain types
  */
 export function filterImageryAssets(assets: CesiumIonAsset[]): CesiumIonAsset[] {
-  const imageryTypes = ['IMAGERY', '3DTILES', 'TERRAIN'];
+  const imageryTypes = ['IMAGERY', 'TERRAIN', '3DTILES'];
   return assets.filter(asset => 
     asset.status === 'COMPLETE' && 
     imageryTypes.includes(asset.type)

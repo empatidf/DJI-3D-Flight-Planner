@@ -92,6 +92,24 @@
   gap: 8px;
 }
 
+.planner-section label.realtime-toggle {
+  margin-top: 2px;
+  white-space: nowrap;
+  justify-content: flex-start;
+  font-weight: 600;
+}
+
+.planner-section label.realtime-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.planner-section label.realtime-toggle span {
+  display: inline-block;
+  white-space: nowrap;
+}
+
 .planner-section input,
 .planner-section select {
   width: 100%;

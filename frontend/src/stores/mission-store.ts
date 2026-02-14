@@ -45,6 +45,7 @@ export interface Mission {
   aoi: AreaOfInterest | null;
   parameters: FlightParameters;
   flightLines: FlightLine[];
+  layerSnapshot?: Layer[];
   visible: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -71,6 +72,15 @@ export interface CameraTarget {
   roll?: number;
 }
 
+export interface MapViewState {
+  longitude: number;
+  latitude: number;
+  altitude: number;
+  heading: number;
+  pitch: number;
+  roll: number;
+}
+
 interface MissionStore {
   missions: Mission[];
   activeMissionId: string | null;
@@ -82,6 +92,7 @@ interface MissionStore {
   layers: Layer[];
   viewMode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW';
   cameraTarget: CameraTarget | null;
+  lastMapView: MapViewState | null;
   cesiumToken: string;
   
   // Mission actions
@@ -94,6 +105,7 @@ interface MissionStore {
   
   // Layer actions
   addLayer: (layer: Omit<Layer, 'id'>) => void;
+  setLayers: (layers: Layer[]) => void;
   updateLayer: (id: string, updates: Partial<Layer>) => void;
   deleteLayer: (id: string) => void;
   toggleLayerVisibility: (id: string) => void;
@@ -101,6 +113,7 @@ interface MissionStore {
   // View actions
   setViewMode: (mode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW') => void;
   setCameraTarget: (target: CameraTarget | null) => void;
+  setLastMapView: (view: MapViewState | null) => void;
   setKmlEditMode: (enabled: boolean) => void;
   setDrawAoiMode: (enabled: boolean) => void;
   setDrawWaypointMode: (enabled: boolean) => void;
@@ -111,7 +124,7 @@ interface MissionStore {
 
 type PersistedMissionState = Pick<
   MissionStore,
-  'missions' | 'activeMissionId' | 'layers' | 'viewMode' | 'showAreaHeightGuides' | 'showWaypointHeightGuides' | 'cesiumToken'
+  'missions' | 'activeMissionId' | 'layers' | 'viewMode' | 'showAreaHeightGuides' | 'showWaypointHeightGuides' | 'cesiumToken' | 'lastMapView'
 >;
 
 const defaultLayers: Layer[] = [
@@ -131,6 +144,27 @@ const defaultLayers: Layer[] = [
   },
 ];
 
+const areLayersEquivalent = (a: Layer[], b: Layer[]) => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+
+  return a.every((layerA, index) => {
+    const layerB = b[index];
+    if (!layerB) return false;
+
+    return (
+      layerA.id === layerB.id &&
+      layerA.name === layerB.name &&
+      layerA.type === layerB.type &&
+      layerA.visible === layerB.visible &&
+      layerA.opacity === layerB.opacity &&
+      layerA.url === layerB.url &&
+      layerA.cesiumAssetId === layerB.cesiumAssetId &&
+      layerA.cesiumAssetType === layerB.cesiumAssetType
+    );
+  });
+};
+
 export const useMissionStore = create<MissionStore>()(
   persist(
     (set, get) => ({
@@ -143,6 +177,7 @@ export const useMissionStore = create<MissionStore>()(
       showWaypointHeightGuides: false,
       layers: defaultLayers,
       cameraTarget: null,
+      lastMapView: null,
       viewMode: 'SCENE3D',
       cesiumToken: '',
 
@@ -205,6 +240,16 @@ export const useMissionStore = create<MissionStore>()(
         }));
       },
 
+      setLayers: (layers) => {
+        set((state) => {
+          const nextLayers = layers.length > 0 ? layers : defaultLayers;
+          if (areLayersEquivalent(state.layers, nextLayers)) {
+            return state;
+          }
+          return { layers: nextLayers };
+        });
+      },
+
       updateLayer: (id, updates) => {
         set((state) => ({
           layers: state.layers.map((l) => (l.id === id ? { ...l, ...updates } : l)),
@@ -232,6 +277,10 @@ export const useMissionStore = create<MissionStore>()(
 
       setCameraTarget: (target) => {
         set({ cameraTarget: target });
+      },
+
+      setLastMapView: (view) => {
+        set({ lastMapView: view });
       },
 
       setKmlEditMode: (enabled) => {
@@ -269,6 +318,7 @@ export const useMissionStore = create<MissionStore>()(
         showAreaHeightGuides: state.showAreaHeightGuides,
         showWaypointHeightGuides: state.showWaypointHeightGuides,
         cesiumToken: state.cesiumToken,
+        lastMapView: state.lastMapView,
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<PersistedMissionState>;
@@ -292,6 +342,7 @@ export const useMissionStore = create<MissionStore>()(
           showAreaHeightGuides: persisted.showAreaHeightGuides ?? currentState.showAreaHeightGuides,
           showWaypointHeightGuides: persisted.showWaypointHeightGuides ?? currentState.showWaypointHeightGuides,
           cesiumToken: persisted.cesiumToken ?? currentState.cesiumToken,
+          lastMapView: persisted.lastMapView ?? currentState.lastMapView,
           kmlEditMode: false,
           drawAoiMode: false,
           drawWaypointMode: false,

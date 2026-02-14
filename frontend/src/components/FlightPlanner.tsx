@@ -1020,14 +1020,14 @@ export const FlightPlanner = () => {
                   </div>
                 </label>
 
-                <label className="inline-toggle">
+                <label className="inline-toggle realtime-toggle">
                   <input
                     type="checkbox"
                     checked={realtimeFlightPreviewEnabled}
                     onChange={(e) => setRealtimeFlightPreviewEnabled(e.target.checked)}
                     disabled={activeMission?.missionType !== 'area' || !activeMission?.aoi}
                   />
-                  Realtime update while sliding
+                  <span>Mission Realtime Update</span>
                 </label>
               </>
             )}

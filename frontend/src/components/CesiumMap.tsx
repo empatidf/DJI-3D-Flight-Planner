@@ -26,6 +26,8 @@ import {
   CallbackPositionProperty,
   CartographicGeocoderService,
   IonGeocoderService,
+  Cesium3DTileset,
+  Cesium3DTileStyle,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
@@ -37,6 +39,9 @@ export const CesiumMap = () => {
   const viewerRef = useRef<Viewer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const compassArrowRef = useRef<HTMLDivElement>(null);
+  const [viewerInitVersion, setViewerInitVersion] = useState(0);
+  const [firstLoadLayerRefreshTick, setFirstLoadLayerRefreshTick] = useState(0);
+  const firstLoadLayerRefreshDoneRef = useRef(false);
   const [contextMenuState, setContextMenuState] = useState<{
     visible: boolean;
     x: number;
@@ -56,14 +61,18 @@ export const CesiumMap = () => {
   const editPolylineIdRef = useRef<string | null>(null);
   const drawPointsRef = useRef<number[][]>([]);
   const drawHoverRef = useRef<number[] | null>(null);
+  const suppressNextContextMenuRef = useRef<boolean>(false);
   const missionAoiRenderVersionRef = useRef<number>(0);
   const missionAoiTerrainCacheRef = useRef<Record<string, { coordKey: string; baseHeights: number[] }>>({});
   const lastAutoFocusedMissionIdRef = useRef<string | null>(null);
   const worldImageryLayerRef = useRef<ImageryLayer | null>(null);
   const worldLabelsLayerRef = useRef<ImageryLayer | null>(null);
+  const customTilesetsRef = useRef<Record<string, Cesium3DTileset>>({});
+  const customLayerLoadRunIdRef = useRef<number>(0);
   const viewMode = useMissionStore((state) => state.viewMode);
   const cameraTarget = useMissionStore((state) => state.cameraTarget);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
+  const setLastMapView = useMissionStore((state) => state.setLastMapView);
   const missions = useMissionStore((state) => state.missions);
   const activeMissionId = useMissionStore((state) => state.activeMissionId);
   const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
@@ -76,6 +85,7 @@ export const CesiumMap = () => {
   const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
   const layers = useMissionStore((state) => state.layers);
   const cesiumToken = useMissionStore((state) => state.cesiumToken);
+  const activeMissionIdForKmlEdit = kmlEditMode ? activeMissionId : null;
 
   const getLonLatFromScreenPosition = (viewer: Viewer, position: Cartesian2) => {
     let cartesian: Cartesian3 | undefined;
@@ -118,6 +128,29 @@ export const CesiumMap = () => {
     ((viewer.geocoder.viewModel as unknown) as { geocoderServices: unknown[] }).geocoderServices = geocoderServices;
   };
 
+  const loadIonImageryProviderWithRetry = async (
+    assetId: number,
+    accessToken: string,
+    maxAttempts: number = 2,
+    retryDelayMs: number = 700
+  ) => {
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await IonImageryProvider.fromAssetId(assetId, { accessToken } as any);
+      } catch (error) {
+        lastError = error;
+        console.warn(`[LayerLoad] IMAGERY load attempt ${attempt}/${maxAttempts} failed for asset ${assetId}:`, error);
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs));
+        }
+      }
+    }
+
+    throw lastError;
+  };
+
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return;
 
@@ -154,17 +187,43 @@ export const CesiumMap = () => {
     // Enable terrain exaggeration for better visibility (2x exaggeration)
     viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
 
-    // Set initial camera position (centered view of Earth)
-    viewer.camera.setView({
-      destination: Cartesian3.fromDegrees(0, 30, 20000000), // Above equator, high enough to see Earth
-      orientation: {
-        heading: CesiumMath.toRadians(0),
-        pitch: CesiumMath.toRadians(-90), // Looking straight down
-        roll: 0.0,
-      },
-    });
+    // Restore last map view if available, otherwise use global default view
+    const persistedMapView = useMissionStore.getState().lastMapView;
+    if (
+      persistedMapView &&
+      Number.isFinite(persistedMapView.longitude) &&
+      Number.isFinite(persistedMapView.latitude) &&
+      Number.isFinite(persistedMapView.altitude) &&
+      Number.isFinite(persistedMapView.heading) &&
+      Number.isFinite(persistedMapView.pitch) &&
+      Number.isFinite(persistedMapView.roll)
+    ) {
+      viewer.camera.setView({
+        destination: Cartesian3.fromDegrees(
+          persistedMapView.longitude,
+          persistedMapView.latitude,
+          persistedMapView.altitude
+        ),
+        orientation: {
+          heading: CesiumMath.toRadians(persistedMapView.heading),
+          pitch: CesiumMath.toRadians(persistedMapView.pitch),
+          roll: CesiumMath.toRadians(persistedMapView.roll),
+        },
+      });
+    } else {
+      viewer.camera.setView({
+        destination: Cartesian3.fromDegrees(0, 30, 20000000),
+        orientation: {
+          heading: CesiumMath.toRadians(0),
+          pitch: CesiumMath.toRadians(-90),
+          roll: 0.0,
+        },
+      });
+    }
 
     viewerRef.current = viewer;
+    setViewerInitVersion((prev) => prev + 1);
+    console.log('[Init] Cesium viewer created; viewerInitVersion incremented');
 
     let compassAngleDegrees = 0;
 
@@ -187,6 +246,38 @@ export const CesiumMap = () => {
     updateCompassHeading();
     viewer.scene.postRender.addEventListener(updateCompassHeading);
 
+    const persistMapView = () => {
+      const cartographic = viewer.camera.positionCartographic;
+      const longitude = CesiumMath.toDegrees(cartographic.longitude);
+      const latitude = CesiumMath.toDegrees(cartographic.latitude);
+      const altitude = cartographic.height;
+      const heading = CesiumMath.toDegrees(viewer.camera.heading);
+      const pitch = CesiumMath.toDegrees(viewer.camera.pitch);
+      const roll = CesiumMath.toDegrees(viewer.camera.roll);
+
+      if (
+        !Number.isFinite(longitude) ||
+        !Number.isFinite(latitude) ||
+        !Number.isFinite(altitude) ||
+        !Number.isFinite(heading) ||
+        !Number.isFinite(pitch) ||
+        !Number.isFinite(roll)
+      ) {
+        return;
+      }
+
+      setLastMapView({
+        longitude,
+        latitude,
+        altitude,
+        heading,
+        pitch,
+        roll,
+      });
+    };
+
+    viewer.camera.moveEnd.addEventListener(persistMapView);
+
     // Support both coordinates and address search
     updateGeocoderServices(viewer, !!cesiumToken.trim());
     
@@ -197,6 +288,7 @@ export const CesiumMap = () => {
     // Cleanup
     return () => {
       viewer.scene.postRender.removeEventListener(updateCompassHeading);
+      viewer.camera.moveEnd.removeEventListener(persistMapView);
       if (viewerRef.current) {
         viewerRef.current.destroy();
         viewerRef.current = null;
@@ -224,6 +316,12 @@ export const CesiumMap = () => {
 
   const handleMapContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
+
+    if (suppressNextContextMenuRef.current) {
+      suppressNextContextMenuRef.current = false;
+      setContextMenuState((prev) => ({ ...prev, visible: false }));
+      return;
+    }
 
     if (drawAoiMode || drawWaypointMode) {
       setContextMenuState((prev) => ({ ...prev, visible: false }));
@@ -304,6 +402,12 @@ export const CesiumMap = () => {
     removeWorldLayers();
 
     const token = cesiumToken.trim();
+    console.log('[WorldLayers] Effect triggered', {
+      hasViewer: !!viewerRef.current,
+      viewerInitVersion,
+      hasToken: !!token,
+    });
+
     if (!token) {
       Ion.defaultAccessToken = '';
       updateGeocoderServices(viewer, false);
@@ -336,7 +440,7 @@ export const CesiumMap = () => {
     return () => {
       cancelled = true;
     };
-  }, [cesiumToken]);
+  }, [cesiumToken, viewerInitVersion]);
 
   // Handle view mode changes
   useEffect(() => {
@@ -458,7 +562,24 @@ export const CesiumMap = () => {
       console.log('Switching to flat terrain');
       viewer.terrainProvider = new EllipsoidTerrainProvider();
     }
-  }, [layers]);
+  }, [layers, viewerInitVersion, firstLoadLayerRefreshTick]);
+
+  // One-time re-apply pass after first viewer initialization (equivalent to uncheck/check once)
+  useEffect(() => {
+    if (!viewerRef.current) return;
+    if (viewerInitVersion === 0) return;
+    if (firstLoadLayerRefreshDoneRef.current) return;
+
+    firstLoadLayerRefreshDoneRef.current = true;
+
+    const timer = window.setTimeout(() => {
+      setFirstLoadLayerRefreshTick((prev) => prev + 1);
+    }, 600);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [viewerInitVersion]);
 
   // Render mission AOI polygons - updates immediately when altitude changes
   useEffect(() => {
@@ -478,7 +599,7 @@ export const CesiumMap = () => {
 
       const isActiveKmlEditMission =
         kmlEditMode &&
-        mission.id === activeMissionId;
+        mission.id === activeMissionIdForKmlEdit;
 
       // Live edit overlay handles active mission in edit mode
       if (isActiveKmlEditMission) return;
@@ -579,7 +700,7 @@ export const CesiumMap = () => {
 
     const validMissionIds = new Set(
       missions
-        .filter((mission) => mission.visible && !!mission.aoi && !(kmlEditMode && mission.id === activeMissionId))
+        .filter((mission) => mission.visible && !!mission.aoi && !(kmlEditMode && mission.id === activeMissionIdForKmlEdit))
         .map((mission) => mission.id)
     );
     Object.keys(missionAoiTerrainCacheRef.current).forEach((missionId) => {
@@ -589,7 +710,7 @@ export const CesiumMap = () => {
     });
     
     // Dependencies include missions array - any change triggers immediate re-render
-  }, [missions, activeMissionId, kmlEditMode]);
+  }, [missions, activeMissionIdForKmlEdit, kmlEditMode]);
 
   // AOI point drag editing for active mission
   useEffect(() => {
@@ -1330,6 +1451,8 @@ export const CesiumMap = () => {
     }, ScreenSpaceEventType.LEFT_CLICK);
 
     handler.setInputAction(() => {
+      suppressNextContextMenuRef.current = true;
+
       const points = drawPointsRef.current;
       if (points.length < 3) return;
 
@@ -1435,6 +1558,8 @@ export const CesiumMap = () => {
     }, ScreenSpaceEventType.LEFT_CLICK);
 
     handler.setInputAction(async () => {
+      suppressNextContextMenuRef.current = true;
+
       const points = drawPointsRef.current;
       if (points.length < 2) return;
 
@@ -1470,6 +1595,44 @@ export const CesiumMap = () => {
     if (!viewerRef.current) return;
 
     const viewer = viewerRef.current;
+    const token = cesiumToken.trim();
+    const ionLoadOptions = { accessToken: token } as any;
+
+    if (!token) {
+      console.log('[LayerLoad] Skipping custom layer load: missing token');
+      return;
+    }
+
+    Ion.defaultAccessToken = token;
+
+    const visibleCustomLayers = layers.filter((layer) => layer.visible && Number.isFinite(Number(layer.cesiumAssetId)));
+    console.log('[LayerLoad] Effect triggered', {
+      viewerInitVersion,
+      firstLoadLayerRefreshTick,
+      totalLayers: layers.length,
+      visibleCustomLayers: visibleCustomLayers.map((layer) => ({
+        id: layer.id,
+        name: layer.name,
+        assetId: layer.cesiumAssetId,
+        assetType: layer.cesiumAssetType,
+        type: layer.type,
+        opacity: layer.opacity,
+      })),
+    });
+
+    const visibleCesiumLayerById = new Map(
+      layers
+        .filter((layer) => layer.visible && Number.isFinite(Number(layer.cesiumAssetId)))
+        .map((layer) => [layer.id, layer])
+    );
+
+    Object.entries(customTilesetsRef.current).forEach(([layerId, tileset]) => {
+      const layer = visibleCesiumLayerById.get(layerId);
+      if (!layer || layer.cesiumAssetType !== '3DTILES') {
+        viewer.scene.primitives.remove(tileset);
+        delete customTilesetsRef.current[layerId];
+      }
+    });
     
     // Remove existing custom imagery layers
     const layersToRemove: ImageryLayer[] = [];
@@ -1482,50 +1645,95 @@ export const CesiumMap = () => {
     }
     layersToRemove.forEach((layer) => viewer.imageryLayers.remove(layer));
 
-    // Add imagery layers for visible layers
-    layers.forEach(async (layer) => {
-      if (!layer.visible) return;
-      
-      let imageryLayer: ImageryLayer | null = null;
-      
-      // Handle Cesium Ion assets
-      if (layer.type === 'cesium-ion' && layer.cesiumAssetId) {
+    const runId = ++customLayerLoadRunIdRef.current;
+
+    const applyCustomLayers = async () => {
+      const visibleLayers = layers.filter((layer) => {
+        if (!layer.visible) return false;
+        const assetId = Number(layer.cesiumAssetId);
+        return Number.isFinite(assetId);
+      });
+
+      for (const layer of visibleLayers) {
+        if (customLayerLoadRunIdRef.current !== runId) return;
+        if (!viewerRef.current || viewerRef.current !== viewer) return;
+
+        const assetId = Number(layer.cesiumAssetId);
+        if (!Number.isFinite(assetId)) continue;
+
+        console.log(`[LayerLoad] Loading layer ${layer.name} (${layer.id})`, {
+          assetId,
+          assetType: layer.cesiumAssetType,
+          type: layer.type,
+        });
+
+        let imageryLayer: ImageryLayer | null = null;
+
         try {
-          // Handle TERRAIN assets differently from IMAGERY
           if (layer.cesiumAssetType === 'TERRAIN') {
-            const terrainProvider = await CesiumTerrainProvider.fromIonAssetId(layer.cesiumAssetId);
+            const terrainProvider = await CesiumTerrainProvider.fromIonAssetId(assetId, ionLoadOptions);
+            if (customLayerLoadRunIdRef.current !== runId) return;
+            if (!viewerRef.current || viewerRef.current !== viewer) return;
+
             viewer.terrainProvider = terrainProvider;
-            console.log(`Applied Cesium Ion TERRAIN: ${layer.name} (Asset: ${layer.cesiumAssetId})`);
+            console.log(`Applied Cesium Ion TERRAIN: ${layer.name} (Asset: ${assetId})`);
             viewer.scene.requestRender();
-            // Terrain doesn't use imagery layers, so skip the rest
-            return;
-          } else {
-            // IMAGERY or 3DTILES - use IonImageryProvider
-            const provider = await IonImageryProvider.fromAssetId(layer.cesiumAssetId);
-            imageryLayer = viewer.imageryLayers.addImageryProvider(provider);
-            console.log(`Added Cesium Ion ${layer.cesiumAssetType || 'IMAGERY'} layer: ${layer.name} (Asset: ${layer.cesiumAssetId})`);
+            continue;
           }
+
+          if (layer.cesiumAssetType === '3DTILES') {
+            const existingTileset = customTilesetsRef.current[layer.id];
+            if (existingTileset) {
+              existingTileset.show = true;
+              existingTileset.style = new Cesium3DTileStyle({
+                color: `color('white', ${layer.opacity})`,
+              });
+              viewer.scene.requestRender();
+              continue;
+            }
+
+            const tileset = await Cesium3DTileset.fromIonAssetId(assetId, ionLoadOptions);
+            if (customLayerLoadRunIdRef.current !== runId) return;
+            if (!viewerRef.current || viewerRef.current !== viewer) return;
+
+            tileset.style = new Cesium3DTileStyle({
+              color: `color('white', ${layer.opacity})`,
+            });
+
+            viewer.scene.primitives.add(tileset);
+            customTilesetsRef.current[layer.id] = tileset;
+            console.log(`Added Cesium Ion 3DTILES layer: ${layer.name} (Asset: ${assetId})`);
+            viewer.scene.requestRender();
+            continue;
+          }
+
+          const provider = await loadIonImageryProviderWithRetry(assetId, token);
+          if (customLayerLoadRunIdRef.current !== runId) return;
+          if (!viewerRef.current || viewerRef.current !== viewer) return;
+
+          imageryLayer = viewer.imageryLayers.addImageryProvider(provider);
+          console.log(`Added Cesium Ion ${layer.cesiumAssetType || 'IMAGERY'} layer: ${layer.name} (Asset: ${assetId})`);
         } catch (error) {
-          console.error(`Failed to load Cesium Ion asset ${layer.cesiumAssetId}:`, error);
-          return;
+          console.error(`Failed to load Cesium Ion asset ${assetId}:`, error);
+          continue;
+        }
+
+        if (imageryLayer) {
+          // @ts-ignore - adding custom property
+          imageryLayer._customLayerId = `custom-${layer.id}`;
+          imageryLayer.alpha = Number.isFinite(layer.opacity) ? layer.opacity : 1;
+          viewer.imageryLayers.raise(imageryLayer);
+          viewer.scene.requestRender();
         }
       }
-      // Future: Add support for other layer types here
-      
-      if (imageryLayer) {
-        // Store custom ID for removal
-        // @ts-ignore - adding custom property
-        imageryLayer._customLayerId = `custom-${layer.id}`;
-        
-        // Set opacity (transparency slider)
-        imageryLayer.alpha = layer.opacity;
-        
-        // Move custom layers to top (above basemap and labels)
-        viewer.imageryLayers.raise(imageryLayer);
-        viewer.scene.requestRender();
-      }
-    });
-  }, [layers, cesiumToken, cameraTarget]);
+    };
+
+    applyCustomLayers();
+
+    return () => {
+      customLayerLoadRunIdRef.current++;
+    };
+  }, [layers, cesiumToken, viewerInitVersion, firstLoadLayerRefreshTick]);
 
   // Render flight lines and waypoints
   useEffect(() => {
@@ -1577,7 +1785,7 @@ export const CesiumMap = () => {
         return;
       }
 
-      if (kmlEditMode && mission.id === activeMissionId && mission.missionType === 'waypoint') {
+      if (kmlEditMode && mission.id === activeMissionIdForKmlEdit && mission.missionType === 'waypoint') {
         console.log(`  Skipping ${mission.name} default render - waypoint edit overlay active`);
         return;
       }
@@ -1808,7 +2016,7 @@ export const CesiumMap = () => {
     
     console.log(`=== RENDER COMPLETE: ${totalLinesRendered} flight lines rendered ===`);
     console.log(`Total entities in viewer: ${viewer.entities.values.length}`);
-  }, [missions, kmlEditMode, activeMissionId, showWaypointHeightGuides, showAreaHeightGuides]);
+  }, [missions, kmlEditMode, activeMissionIdForKmlEdit, showWaypointHeightGuides, showAreaHeightGuides]);
 
   return (
     <div

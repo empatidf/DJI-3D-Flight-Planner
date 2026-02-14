@@ -9,12 +9,35 @@ import { useMissionStore } from '../stores/mission-store';
 import { DRONES } from '../lib/drone-specs';
 import './MissionManager.css';
 
+const areLayersEquivalent = (a: ReturnType<typeof useMissionStore.getState>['layers'], b: ReturnType<typeof useMissionStore.getState>['layers']) => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+
+  return a.every((layerA, index) => {
+    const layerB = b[index];
+    if (!layerB) return false;
+
+    return (
+      layerA.id === layerB.id &&
+      layerA.name === layerB.name &&
+      layerA.type === layerB.type &&
+      layerA.visible === layerB.visible &&
+      layerA.opacity === layerB.opacity &&
+      layerA.url === layerB.url &&
+      layerA.cesiumAssetId === layerB.cesiumAssetId &&
+      layerA.cesiumAssetType === layerB.cesiumAssetType
+    );
+  });
+};
+
 export const MissionManager = () => {
   const missions = useMissionStore((state) => state.missions);
+  const layers = useMissionStore((state) => state.layers);
   const activeMissionId = useMissionStore((state) => state.activeMissionId);
   const addMission = useMissionStore((state) => state.addMission);
   const deleteMission = useMissionStore((state) => state.deleteMission);
   const setActiveMission = useMissionStore((state) => state.setActiveMission);
+  const setLayers = useMissionStore((state) => state.setLayers);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
   const toggleMissionVisibility = useMissionStore((state) => state.toggleMissionVisibility);
 
@@ -65,6 +88,7 @@ export const MissionManager = () => {
         waypointAutoGimbalYaw: true,
       },
       flightLines: [],
+      layerSnapshot: layers.map((layer) => ({ ...layer })),
       visible: true,
     });
 
@@ -80,10 +104,17 @@ export const MissionManager = () => {
   };
 
   const handleSelectMission = (missionId: string) => {
-    setActiveMission(missionId);
-
     const mission = missions.find((item) => item.id === missionId);
     if (!mission) return;
+
+    if (mission.layerSnapshot && mission.layerSnapshot.length > 0) {
+      const snapshotLayers = mission.layerSnapshot.map((layer) => ({ ...layer }));
+      if (!areLayersEquivalent(snapshotLayers, layers)) {
+        setLayers(snapshotLayers);
+      }
+    }
+
+    setActiveMission(missionId);
 
     const sourceCoordinates = mission.aoi?.coordinates?.length
       ? mission.aoi.coordinates
