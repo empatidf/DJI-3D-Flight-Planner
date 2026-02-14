@@ -15,10 +15,23 @@ export const MissionManager = () => {
   const addMission = useMissionStore((state) => state.addMission);
   const deleteMission = useMissionStore((state) => state.deleteMission);
   const setActiveMission = useMissionStore((state) => state.setActiveMission);
+  const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
   const toggleMissionVisibility = useMissionStore((state) => state.toggleMissionVisibility);
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newMissionName, setNewMissionName] = useState('');
+
+  const getMissionTag = (mission: typeof missions[number]) => {
+    if (mission.missionType === 'waypoint') {
+      const firstLineId = mission.flightLines?.[0]?.id ?? '';
+      return firstLineId.startsWith('waypoint-import-') ? 'Kml Waypoint' : 'Add Waypoint';
+    }
+
+    if (mission.aoi?.type === 'kml') return 'Kml Area';
+    if (mission.aoi) return 'Drawn Area';
+
+    return null;
+  };
 
   const handleCreateMission = () => {
     if (!newMissionName.trim()) {
@@ -64,6 +77,45 @@ export const MissionManager = () => {
     if (confirm('Are you sure you want to delete this mission?')) {
       deleteMission(id);
     }
+  };
+
+  const handleSelectMission = (missionId: string) => {
+    setActiveMission(missionId);
+
+    const mission = missions.find((item) => item.id === missionId);
+    if (!mission) return;
+
+    const sourceCoordinates = mission.aoi?.coordinates?.length
+      ? mission.aoi.coordinates
+      : (mission.flightLines ?? []).flatMap((line) => line.coordinates ?? []);
+
+    const validCoordinates = sourceCoordinates.filter(
+      (coord): coord is number[] => !!coord && Number.isFinite(coord[0]) && Number.isFinite(coord[1])
+    );
+
+    if (validCoordinates.length === 0) return;
+
+    const lons = validCoordinates.map((coord) => coord[0]);
+    const lats = validCoordinates.map((coord) => coord[1]);
+
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+
+    const centerLon = (minLon + maxLon) / 2;
+    const centerLat = (minLat + maxLat) / 2;
+    const span = Math.max(maxLon - minLon, maxLat - minLat);
+    const focusAltitude = Math.max(800, span * 140000);
+
+    setCameraTarget({
+      longitude: centerLon,
+      latitude: centerLat,
+      altitude: focusAltitude,
+      heading: 0,
+      pitch: -90,
+      roll: 0,
+    });
   };
 
   return (
@@ -125,13 +177,13 @@ export const MissionManager = () => {
               {/* Mission Name */}
               <div
                 className="mission-name"
-                onClick={() => setActiveMission(mission.id)}
+                onClick={() => handleSelectMission(mission.id)}
                 title="Select mission"
               >
                 {mission.name}
-                {mission.aoi && (
+                {getMissionTag(mission) && (
                   <span className="mission-badge">
-                    {mission.aoi.type === 'kml' ? 'KML' : 'Drawn'}
+                    {getMissionTag(mission)}
                   </span>
                 )}
               </div>

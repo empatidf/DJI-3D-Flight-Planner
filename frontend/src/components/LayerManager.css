@@ -3,8 +3,8 @@
   background: rgba(255, 255, 255, 0.98);
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-  width: 380px;
-  max-width: 90vw;
+  width: 320px;
+  max-width: calc(100vw - 20px);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
   overflow: hidden;
   display: flex;
@@ -21,11 +21,125 @@
   border-bottom: 2px solid rgba(0, 0, 0, 0.1);
 }
 
+.token-section {
+  padding: 10px 15px;
+  border-bottom: 1px solid #e9ecef;
+  background: #f8f9fa;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #495057;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.token-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.token-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.token-actions .btn-action {
+  flex: 1;
+}
+
+.token-save {
+  background: #10b981;
+}
+
+.token-save:hover:not(:disabled) {
+  background: #0f9f70;
+}
+
+.token-delete {
+  background: #6b7280;
+}
+
+.token-delete:hover:not(:disabled) {
+  background: #4b5563;
+}
+
+.token-saved-text {
+  font-size: 11px;
+  color: #374151;
+}
+
+.token-status {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.token-status.success {
+  color: #15803d;
+}
+
+.token-status.error {
+  color: #b91c1c;
+}
+
+.token-status.info {
+  color: #1d4ed8;
+}
+
 .view-mode-selector {
   margin: 0;
   padding: 10px 15px 12px 15px;
   border-bottom: 1px solid #e9ecef;
   background: #f8f9fa;
+}
+
+.layer-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 15px;
+  border-bottom: 1px solid #e9ecef;
+  background: #f8f9fa;
+}
+
+.layer-asset-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 13px;
+  background: white;
+  box-sizing: border-box;
+}
+
+.layer-actions .btn-action {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13px;
+  border: none;
+  border-radius: 5px;
+  background: #10b981;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.layer-actions .btn-action:hover:not(:disabled) {
+  background: #0f9f70;
+  transform: translateY(-1px);
+}
+
+.layer-actions .btn-action:disabled {
+  background: #c2c7d0;
+  cursor: not-allowed;
 }
 
 .view-mode-selector label {
@@ -59,16 +173,17 @@
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 10px;
+  padding: 8px;
 }
 
 .layer-item {
-  padding: 10px;
+  padding: 8px 10px;
   background: white;
   border-bottom: 1px solid #e9ecef;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   transition: background-color 0.15s ease;
 }
 
@@ -80,11 +195,18 @@
   border-bottom: none;
 }
 
+.layer-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .layer-item label {
   display: flex;
   align-items: center;
-  flex: 1;
-  gap: 10px;
+  width: 100%;
+  gap: 8px;
   cursor: pointer;
   font-size: 13px;
   color: #212529;
@@ -101,11 +223,60 @@
 .layer-name {
   flex: 1;
   user-select: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-type-badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  color: white;
+  border-radius: 3px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-width: 58px;
+  height: 18px;
+  line-height: 1;
+}
+
+.layer-type-badge.terrain {
+  background-color: #f59e0b;
+}
+
+.layer-type-badge.imagery {
+  background-color: #3b82f6;
+}
+
+.layer-remove-btn {
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.layer-remove-btn:hover {
+  background: #fee2e2;
+  color: #dc2626;
 }
 
 .layer-controls {
-  margin-top: 8px;
-  padding: 0 10px 10px 10px;
+  margin-top: 0;
+  padding: 0;
 }
 
 .layer-controls label {
@@ -132,4 +303,17 @@
   font-weight: 600;
   color: #495057;
   font-size: 12px;
+}
+
+@media (max-width: 1024px) {
+  .layer-manager {
+    width: 280px;
+  }
+}
+
+@media (max-width: 768px) {
+  .layer-manager {
+    width: auto;
+    max-width: calc(100vw - 20px);
+  }
 }

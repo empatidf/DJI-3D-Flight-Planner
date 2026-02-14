@@ -4,6 +4,7 @@
  */
 
 import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import type { CameraSpec, DroneSpec } from '../lib/drone-specs';
 
 export interface FlightParameters {
@@ -76,10 +77,12 @@ interface MissionStore {
   kmlEditMode: boolean;
   drawAoiMode: boolean;
   drawWaypointMode: boolean;
+  showAreaHeightGuides: boolean;
   showWaypointHeightGuides: boolean;
   layers: Layer[];
   viewMode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW';
   cameraTarget: CameraTarget | null;
+  cesiumToken: string;
   
   // Mission actions
   addMission: (mission: Omit<Mission, 'id' | 'createdAt' | 'updatedAt'>) => string;
@@ -101,158 +104,200 @@ interface MissionStore {
   setKmlEditMode: (enabled: boolean) => void;
   setDrawAoiMode: (enabled: boolean) => void;
   setDrawWaypointMode: (enabled: boolean) => void;
+  setShowAreaHeightGuides: (enabled: boolean) => void;
   setShowWaypointHeightGuides: (enabled: boolean) => void;
+  setCesiumToken: (token: string) => void;
 }
 
-export const useMissionStore = create<MissionStore>((set, get) => ({
-  missions: [],
-  activeMissionId: null,
-  kmlEditMode: false,
-  drawAoiMode: false,
-  drawWaypointMode: false,
-  showWaypointHeightGuides: false,
-  layers: [
+type PersistedMissionState = Pick<
+  MissionStore,
+  'missions' | 'activeMissionId' | 'layers' | 'viewMode' | 'showAreaHeightGuides' | 'showWaypointHeightGuides' | 'cesiumToken'
+>;
+
+const defaultLayers: Layer[] = [
+  {
+    id: 'basemap',
+    name: 'Base Map',
+    type: 'basemap',
+    visible: true,
+    opacity: 1.0,
+  },
+  {
+    id: 'terrain',
+    name: 'Terrain',
+    type: 'terrain',
+    visible: false,
+    opacity: 1.0,
+  },
+];
+
+export const useMissionStore = create<MissionStore>()(
+  persist(
+    (set, get) => ({
+      missions: [],
+      activeMissionId: null,
+      kmlEditMode: false,
+      drawAoiMode: false,
+      drawWaypointMode: false,
+      showAreaHeightGuides: false,
+      showWaypointHeightGuides: false,
+      layers: defaultLayers,
+      cameraTarget: null,
+      viewMode: 'SCENE3D',
+      cesiumToken: '',
+
+      // Mission actions
+      addMission: (mission) => {
+        const id = `mission-${Date.now()}`;
+        const newMission: Mission = {
+          ...mission,
+          id,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        set((state) => ({
+          missions: [...state.missions, newMission],
+          activeMissionId: id,
+        }));
+
+        return id;
+      },
+
+      updateMission: (id, updates) => {
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.id === id ? { ...m, ...updates, updatedAt: new Date() } : m
+          ),
+        }));
+      },
+
+      deleteMission: (id) => {
+        set((state) => ({
+          missions: state.missions.filter((m) => m.id !== id),
+          activeMissionId: state.activeMissionId === id ? null : state.activeMissionId,
+        }));
+      },
+
+      setActiveMission: (id) => {
+        set({ activeMissionId: id });
+      },
+
+      getActiveMission: () => {
+        const { missions, activeMissionId } = get();
+        return missions.find((m) => m.id === activeMissionId) || null;
+      },
+
+      toggleMissionVisibility: (id) => {
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.id === id ? { ...m, visible: !m.visible } : m
+          ),
+        }));
+      },
+
+      // Layer actions
+      addLayer: (layer) => {
+        const id = `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const newLayer: Layer = { ...layer, id };
+        set((state) => ({
+          layers: [...state.layers, newLayer],
+        }));
+      },
+
+      updateLayer: (id, updates) => {
+        set((state) => ({
+          layers: state.layers.map((l) => (l.id === id ? { ...l, ...updates } : l)),
+        }));
+      },
+
+      deleteLayer: (id) => {
+        set((state) => ({
+          layers: state.layers.filter((l) => l.id !== id),
+        }));
+      },
+
+      toggleLayerVisibility: (id) => {
+        set((state) => ({
+          layers: state.layers.map((l) =>
+            l.id === id ? { ...l, visible: !l.visible } : l
+          ),
+        }));
+      },
+
+      // View actions
+      setViewMode: (mode) => {
+        set({ viewMode: mode });
+      },
+
+      setCameraTarget: (target) => {
+        set({ cameraTarget: target });
+      },
+
+      setKmlEditMode: (enabled) => {
+        set({ kmlEditMode: enabled });
+      },
+
+      setDrawAoiMode: (enabled) => {
+        set({ drawAoiMode: enabled });
+      },
+
+      setDrawWaypointMode: (enabled) => {
+        set({ drawWaypointMode: enabled });
+      },
+
+      setShowAreaHeightGuides: (enabled) => {
+        set({ showAreaHeightGuides: enabled });
+      },
+
+      setShowWaypointHeightGuides: (enabled) => {
+        set({ showWaypointHeightGuides: enabled });
+      },
+
+      setCesiumToken: (token) => {
+        set({ cesiumToken: token.trim() });
+      },
+    }),
     {
-      id: 'basemap',
-      name: 'Base Map',
-      type: 'basemap',
-      visible: true,
-      opacity: 1.0,
-    },
-    {
-      id: 'terrain',
-      name: 'Terrain',
-      type: 'terrain',
-      visible: false,
-      opacity: 1.0,
-    },
-  ],
-  cameraTarget: null,
-  viewMode: 'SCENE3D',
+      name: '3d-planer-mission-store',
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state): PersistedMissionState => ({
+        missions: state.missions,
+        activeMissionId: state.activeMissionId,
+        layers: state.layers,
+        viewMode: state.viewMode,
+        showAreaHeightGuides: state.showAreaHeightGuides,
+        showWaypointHeightGuides: state.showWaypointHeightGuides,
+        cesiumToken: state.cesiumToken,
+      }),
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<PersistedMissionState>;
 
-  // Mission actions
-  addMission: (mission) => {
-    const id = `mission-${Date.now()}`;
-    const newMission: Mission = {
-      ...mission,
-      id,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    
-    set((state) => ({
-      missions: [...state.missions, newMission],
-      activeMissionId: id,
-    }));
-    
-    return id;
-  },
+        const hydratedMissions = (persisted.missions ?? []).map((mission) => ({
+          ...mission,
+          createdAt: new Date(mission.createdAt),
+          updatedAt: new Date(mission.updatedAt),
+        }));
 
-  updateMission: (id, updates) => {
-    console.log('=== UPDATE MISSION CALLED ===');
-    console.log('Mission ID:', id);
-    console.log('Updates:', updates);
-    console.log('Flight lines in updates:', updates.flightLines?.length);
-    
-    set((state) => {
-      const oldMissions = state.missions;
-      console.log('Old missions array reference:', oldMissions);
-      console.log('Old missions length:', oldMissions.length);
-      
-      const updatedMissions = state.missions.map((m) =>
-        m.id === id ? { ...m, ...updates, updatedAt: new Date() } : m
-      );
-      
-      console.log('New missions array reference:', updatedMissions);
-      console.log('References are different:', oldMissions !== updatedMissions);
-      console.log('Updated missions:', updatedMissions);
-      
-      const updatedMission = updatedMissions.find(m => m.id === id);
-      console.log('Updated mission flight lines:', updatedMission?.flightLines?.length);
-      
-      return {
-        missions: updatedMissions,
-      };
-    });
-    
-    console.log('=== UPDATE MISSION COMPLETE ===');
-  },
+        const activeMissionId = hydratedMissions.some((m) => m.id === persisted.activeMissionId)
+          ? persisted.activeMissionId ?? null
+          : null;
 
-  deleteMission: (id) => {
-    set((state) => ({
-      missions: state.missions.filter((m) => m.id !== id),
-      activeMissionId: state.activeMissionId === id ? null : state.activeMissionId,
-    }));
-  },
-
-  setActiveMission: (id) => {
-    set({ activeMissionId: id });
-  },
-
-  getActiveMission: () => {
-    const { missions, activeMissionId } = get();
-    return missions.find((m) => m.id === activeMissionId) || null;
-  },
-
-  toggleMissionVisibility: (id) => {
-    set((state) => ({
-      missions: state.missions.map((m) =>
-        m.id === id ? { ...m, visible: !m.visible } : m
-      ),
-    }));
-  },
-
-  // Layer actions
-  addLayer: (layer) => {
-    const id = `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const newLayer: Layer = { ...layer, id };
-    set((state) => ({
-      layers: [...state.layers, newLayer],
-    }));
-  },
-
-  updateLayer: (id, updates) => {
-    set((state) => ({
-      layers: state.layers.map((l) => (l.id === id ? { ...l, ...updates } : l)),
-    }));
-  },
-
-  deleteLayer: (id) => {
-    set((state) => ({
-      layers: state.layers.filter((l) => l.id !== id),
-    }));
-  },
-
-  toggleLayerVisibility: (id) => {
-    set((state) => ({
-      layers: state.layers.map((l) =>
-        l.id === id ? { ...l, visible: !l.visible } : l
-      ),
-    }));
-  },
-
-  // View actions
-  setViewMode: (mode) => {
-    set({ viewMode: mode });
-  },
-
-  setCameraTarget: (target) => {
-    set({ cameraTarget: target });
-  },
-
-  setKmlEditMode: (enabled) => {
-    set({ kmlEditMode: enabled });
-  },
-
-  setDrawAoiMode: (enabled) => {
-    set({ drawAoiMode: enabled });
-  },
-
-  setDrawWaypointMode: (enabled) => {
-    set({ drawWaypointMode: enabled });
-  },
-
-  setShowWaypointHeightGuides: (enabled) => {
-    set({ showWaypointHeightGuides: enabled });
-  },
-}));
+        return {
+          ...currentState,
+          missions: hydratedMissions,
+          activeMissionId,
+          layers: persisted.layers && persisted.layers.length > 0 ? persisted.layers : currentState.layers,
+          viewMode: persisted.viewMode ?? currentState.viewMode,
+          showAreaHeightGuides: persisted.showAreaHeightGuides ?? currentState.showAreaHeightGuides,
+          showWaypointHeightGuides: persisted.showWaypointHeightGuides ?? currentState.showWaypointHeightGuides,
+          cesiumToken: persisted.cesiumToken ?? currentState.cesiumToken,
+          kmlEditMode: false,
+          drawAoiMode: false,
+          drawWaypointMode: false,
+          cameraTarget: null,
+        };
+      },
+    }
+  )
+);

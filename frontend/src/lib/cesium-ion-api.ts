@@ -16,6 +16,33 @@ export interface CesiumIonAsset {
 
 const CESIUM_ION_API = 'https://api.cesium.com/v1';
 
+export async function validateCesiumToken(accessToken: string): Promise<{ valid: boolean; message: string }> {
+  const token = accessToken.trim();
+  if (!token) {
+    return { valid: false, message: 'Token is empty' };
+  }
+
+  try {
+    const response = await fetch(`${CESIUM_ION_API}/assets?limit=1`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+
+    if (response.ok) {
+      return { valid: true, message: 'Token is valid' };
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      return { valid: false, message: 'Invalid token (unauthorized)' };
+    }
+
+    return { valid: false, message: `Token check failed (${response.status})` };
+  } catch (error) {
+    return { valid: false, message: `Token check failed: ${(error as Error).message}` };
+  }
+}
+
 /**
  * Fetch all assets from Cesium Ion account
  */

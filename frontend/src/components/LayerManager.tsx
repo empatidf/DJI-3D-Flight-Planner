@@ -5,8 +5,7 @@
 
 import React from 'react';
 import { useMissionStore } from '../stores/mission-store';
-import { fetchCesiumAssets, filterImageryAssets, getAssetMetadata, type CesiumIonAsset } from '../lib/cesium-ion-api';
-import { Ion } from 'cesium';
+import { fetchCesiumAssets, filterImageryAssets, getAssetMetadata, validateCesiumToken, type CesiumIonAsset } from '../lib/cesium-ion-api';
 import './LayerManager.css';
 
 export const LayerManager = () => {
@@ -14,21 +13,79 @@ export const LayerManager = () => {
   const viewMode = useMissionStore((state) => state.viewMode);
   const toggleLayerVisibility = useMissionStore((state) => state.toggleLayerVisibility);
   const updateLayer = useMissionStore((state) => state.updateLayer);
+  const deleteLayer = useMissionStore((state) => state.deleteLayer);
   const setViewMode = useMissionStore((state) => state.setViewMode);
   const addLayer = useMissionStore((state) => state.addLayer);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
+  const cesiumToken = useMissionStore((state) => state.cesiumToken);
+  const setCesiumToken = useMissionStore((state) => state.setCesiumToken);
   
   const [cesiumAssets, setCesiumAssets] = React.useState<CesiumIonAsset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = React.useState<string>('');
   const [isLoadingAssets, setIsLoadingAssets] = React.useState(false);
+  const [tokenInput, setTokenInput] = React.useState('');
+  const [isCheckingToken, setIsCheckingToken] = React.useState(false);
+  const [isTokenEditing, setIsTokenEditing] = React.useState(true);
+  const [tokenStatus, setTokenStatus] = React.useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+
+  React.useEffect(() => {
+    setTokenInput(cesiumToken || '');
+    setIsTokenEditing(!cesiumToken);
+  }, [cesiumToken]);
+
+  const maskToken = (token: string) => {
+    if (!token) return '';
+    if (token.length <= 8) return '••••••••';
+    return `••••••••••••${token.slice(-6)}`;
+  };
+
+  const handleSaveToken = async () => {
+    const trimmed = tokenInput.trim();
+    if (!trimmed) {
+      setTokenStatus({ type: 'error', message: 'Please enter a Cesium token' });
+      return;
+    }
+
+    setIsCheckingToken(true);
+    setTokenStatus({ type: 'info', message: 'Checking token with Cesium...' });
+    const result = await validateCesiumToken(trimmed);
+    setIsCheckingToken(false);
+
+    if (!result.valid) {
+      setTokenStatus({ type: 'error', message: result.message });
+      return;
+    }
+
+    setCesiumToken(trimmed);
+    setIsTokenEditing(false);
+    setTokenStatus({ type: 'success', message: 'Token saved and activated' });
+  };
+
+  const handleStartTokenEdit = () => {
+    setIsTokenEditing(true);
+    setTokenStatus({ type: 'info', message: 'Edit token and click Save Token' });
+  };
+
+  const handleDeleteToken = () => {
+    setCesiumToken('');
+    setTokenInput('');
+    setIsTokenEditing(true);
+    setCesiumAssets([]);
+    setSelectedAssetId('');
+    setTokenStatus({ type: 'info', message: 'Token removed' });
+  };
   
   // Fetch Cesium Ion assets on component mount
   React.useEffect(() => {
     const loadAssets = async () => {
+      if (!cesiumToken) {
+        setCesiumAssets([]);
+        return;
+      }
+
       setIsLoadingAssets(true);
       try {
-        const token = Ion.defaultAccessToken;
-        const allAssets = await fetchCesiumAssets(token);
+        const allAssets = await fetchCesiumAssets(cesiumToken);
         const imageryAssets = filterImageryAssets(allAssets);
         setCesiumAssets(imageryAssets);
       } catch (error) {
@@ -38,11 +95,16 @@ export const LayerManager = () => {
       }
     };
     loadAssets();
-  }, []);
+  }, [cesiumToken]);
 
   const handleAddCesiumAsset = async () => {
     if (!selectedAssetId) {
       alert('Please select a Cesium Ion asset');
+      return;
+    }
+
+    if (!cesiumToken) {
+      alert('Please add a valid Cesium token first');
       return;
     }
     
@@ -53,7 +115,7 @@ export const LayerManager = () => {
     
     try {
       // Get asset metadata for bounds
-      const metadata = await getAssetMetadata(assetId, Ion.defaultAccessToken);
+      const metadata = await getAssetMetadata(assetId, cesiumToken);
       
       // Add layer with Cesium Ion asset
       addLayer({
@@ -97,29 +159,46 @@ export const LayerManager = () => {
 
   return (
     <div className="layer-manager">
-      <h3>Layers</h3>
+      <h3>Cesium Layer Manager</h3>
+
+      <div className="token-section">
+        <div className="token-section-title">Add Cesium Token</div>
+        <input
+          className="token-input"
+          type="password"
+          value={tokenInput}
+          onChange={(e) => setTokenInput(e.target.value)}
+          placeholder="Paste Cesium Ion access token"
+          disabled={!!cesiumToken && !isTokenEditing}
+        />
+        <div className="token-actions">
+          <button
+            className="btn-action token-save"
+            onClick={cesiumToken && !isTokenEditing ? handleStartTokenEdit : handleSaveToken}
+            disabled={isCheckingToken}
+          >
+            {isCheckingToken ? 'Checking...' : cesiumToken && !isTokenEditing ? 'Change Token' : 'Save Token'}
+          </button>
+          <button className="btn-action token-delete" onClick={handleDeleteToken} disabled={!cesiumToken}>
+            Delete
+          </button>
+        </div>
+        <div className="token-saved-text">
+          {cesiumToken ? `Saved: ${maskToken(cesiumToken)} (Added)` : 'Saved: No token'}
+        </div>
+        {tokenStatus && <div className={`token-status ${tokenStatus.type}`}>{tokenStatus.message}</div>}
+      </div>
       
       {/* Add Cesium Ion Asset */}
-      <div className="layer-actions" style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '8px',
-        marginBottom: '15px'
-      }}>
+      <div className="layer-actions">
         <select
+          className="layer-asset-select"
           value={selectedAssetId}
           onChange={(e) => setSelectedAssetId(e.target.value)}
-          disabled={isLoadingAssets}
-          style={{
-            padding: '8px 12px',
-            fontSize: '13px',
-            borderRadius: '4px',
-            border: '1px solid #ccc',
-            backgroundColor: 'white'
-          }}
+          disabled={isLoadingAssets || !cesiumToken}
         >
           <option value="">
-            {isLoadingAssets ? 'Loading assets...' : 'Select Cesium Ion Asset'}
+            {!cesiumToken ? 'Add token to load assets' : isLoadingAssets ? 'Loading assets...' : 'Select Cesium Ion Asset'}
           </option>
           {cesiumAssets.map(asset => (
             <option key={asset.id} value={asset.id}>
@@ -130,17 +209,8 @@ export const LayerManager = () => {
         <button
           className="btn-action"
           onClick={handleAddCesiumAsset}
-          disabled={!selectedAssetId || isLoadingAssets}
+          disabled={!selectedAssetId || isLoadingAssets || !cesiumToken}
           title="Add selected Cesium Ion asset"
-          style={{
-            padding: '8px 12px',
-            fontSize: '13px',
-            backgroundColor: selectedAssetId ? '#10b981' : '#ccc',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: selectedAssetId ? 'pointer' : 'not-allowed'
-          }}
         >
           + Add Asset
         </button>
@@ -170,18 +240,24 @@ export const LayerManager = () => {
                 />
                 <span className="layer-name">{layer.name}</span>
                 {layer.type === 'cesium-ion' && layer.cesiumAssetType && (
-                  <span style={{
-                    marginLeft: '8px',
-                    padding: '2px 6px',
-                    fontSize: '10px',
-                    backgroundColor: layer.cesiumAssetType === 'TERRAIN' ? '#f59e0b' : '#3b82f6',
-                    color: 'white',
-                    borderRadius: '3px'
-                  }}>
+                  <span
+                    className={`layer-type-badge ${layer.cesiumAssetType === 'TERRAIN' ? 'terrain' : 'imagery'}`}
+                  >
                     {layer.cesiumAssetType}
                   </span>
                 )}
               </label>
+
+              {layer.id !== 'basemap' && layer.id !== 'terrain' && (
+                <button
+                  className="layer-remove-btn"
+                  onClick={() => deleteLayer(layer.id)}
+                  title="Remove layer"
+                  aria-label={`Remove ${layer.name}`}
+                >
+                  ✕
+                </button>
+              )}
             </div>
             
             {layer.visible && (

@@ -3,7 +3,7 @@
  * Right sidebar for mission planning and parameter configuration
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { DRONES, type DroneSpec, type CameraSpec } from '../lib/drone-specs';
 import { calculateFlightPlan } from '../lib/flight-calculations';
 import { useMissionStore } from '../stores/mission-store';
@@ -24,6 +24,8 @@ export const FlightPlanner = () => {
   const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
   const drawWaypointMode = useMissionStore((state) => state.drawWaypointMode);
   const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
+  const showAreaHeightGuides = useMissionStore((state) => state.showAreaHeightGuides);
+  const setShowAreaHeightGuides = useMissionStore((state) => state.setShowAreaHeightGuides);
   const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
   const setShowWaypointHeightGuides = useMissionStore((state) => state.setShowWaypointHeightGuides);
 
@@ -50,8 +52,105 @@ export const FlightPlanner = () => {
   const [showDroneConfig, setShowDroneConfig] = useState<boolean>(true);
   const [showPhotogrammetry, setShowPhotogrammetry] = useState<boolean>(true);
   const [showWaypointSettings, setShowWaypointSettings] = useState<boolean>(true);
+  const [realtimeFlightPreviewEnabled, setRealtimeFlightPreviewEnabled] = useState<boolean>(false);
 
   const [flightPlan, setFlightPlan] = useState<any>(null);
+  const realtimePreviewFrameRef = useRef<number | null>(null);
+  const realtimePreviewRequestRef = useRef<number>(0);
+
+  const buildTerrainAdjustedAreaPlan = async (aoiCoordinates: number[][]) => {
+    const footprintWidth = (selectedCamera.sensorWidth * altitude) / selectedCamera.focalLength;
+    const footprintHeight = (selectedCamera.sensorHeight * altitude) / selectedCamera.focalLength;
+    const lineSpacing = footprintWidth * (1 - sideOverlap / 100);
+    const photoInterval = (footprintHeight * (1 - forwardOverlap / 100)) / speed;
+
+    if (!Number.isFinite(lineSpacing) || !Number.isFinite(photoInterval) || lineSpacing <= 0 || photoInterval <= 0) {
+      throw new Error('Invalid photogrammetry parameters for flight plan generation');
+    }
+
+    const flightPlanResult = generateFlightLines(
+      aoiCoordinates,
+      lineSpacing,
+      flightAngle,
+      altitude,
+      photoInterval,
+      speed
+    );
+
+    const viewer = getCesiumViewer();
+    const convertedLines = await Promise.all(
+      flightPlanResult.lines.map(async (line) => {
+        const waypoints = line.waypoints.map((wp) => [wp.lon, wp.lat, wp.alt]);
+        const terrainWaypoints = viewer
+          ? await sampleTerrainForWaypoints(viewer, waypoints, altitude)
+          : waypoints;
+
+        const photoPoints = line.waypoints
+          .map((wp, index) => ({ wp, index }))
+          .filter(({ wp }) => wp.action === 'photo')
+          .map(({ index }) => terrainWaypoints[index]);
+
+        return {
+          id: line.id,
+          coordinates: terrainWaypoints,
+          photoPoints,
+        };
+      })
+    );
+
+    const calculatedPlan = calculateFlightPlan(
+      selectedCamera,
+      altitude,
+      speed,
+      forwardOverlap,
+      sideOverlap,
+      flightPlanResult.totalDistance,
+      flightPlanResult.lines.length
+    );
+
+    return {
+      flightPlanResult,
+      convertedLines,
+      calculatedPlan,
+    };
+  };
+
+  const calculateSegmentDistanceMeters = (from: number[], to: number[]) => {
+    const earthRadius = 6371000;
+    const lat1 = (from[1] * Math.PI) / 180;
+    const lat2 = (to[1] * Math.PI) / 180;
+    const dLat = ((to[1] - from[1]) * Math.PI) / 180;
+    const dLon = ((to[0] - from[0]) * Math.PI) / 180;
+
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return earthRadius * c;
+  };
+
+  const getTotalDistanceFromFlightLines = (lines: { coordinates: number[][] }[]) => {
+    return lines.reduce((sum, line) => {
+      if (!line.coordinates || line.coordinates.length < 2) return sum;
+
+      for (let index = 0; index < line.coordinates.length - 1; index += 1) {
+        const from = line.coordinates[index];
+        const to = line.coordinates[index + 1];
+
+        if (
+          Number.isFinite(from?.[0]) &&
+          Number.isFinite(from?.[1]) &&
+          Number.isFinite(to?.[0]) &&
+          Number.isFinite(to?.[1])
+        ) {
+          sum += calculateSegmentDistanceMeters(from, to);
+        }
+      }
+
+      return sum;
+    }, 0);
+  };
 
   // Load active mission parameters
   useEffect(() => {
@@ -88,9 +187,21 @@ export const FlightPlanner = () => {
     }
   }, [activeMission?.id, activeMission?.aoi, activeMission?.missionType, activeMission?.flightLines, setKmlEditMode]);
 
-  // Update flight plan calculations when parameters change
+  // Update calculated statistics only when an area flight plan already exists
   useEffect(() => {
-    if (!selectedCamera) return;
+    const hasGeneratedAreaPlan =
+      activeMission?.missionType === 'area' &&
+      !!activeMission?.aoi &&
+      !!activeMission?.flightLines?.length &&
+      activeMission.flightLines.some((line) => line.coordinates.length > 1);
+
+    if (!selectedCamera || !hasGeneratedAreaPlan || !activeMission) {
+      setFlightPlan(null);
+      return;
+    }
+
+    const totalDistance = getTotalDistanceFromFlightLines(activeMission.flightLines);
+    const numLines = activeMission.flightLines.length;
 
     const plan = calculateFlightPlan(
       selectedCamera,
@@ -98,12 +209,73 @@ export const FlightPlanner = () => {
       speed,
       forwardOverlap,
       sideOverlap,
-      1000, // dummy distance for now
-      5 // dummy number of lines
+      totalDistance,
+      numLines
     );
 
     setFlightPlan(plan);
-  }, [selectedCamera, altitude, speed, forwardOverlap, sideOverlap]);
+  }, [
+    activeMission?.id,
+    activeMission?.missionType,
+    activeMission?.aoi,
+    activeMission?.flightLines,
+    selectedCamera,
+    altitude,
+    speed,
+    forwardOverlap,
+    sideOverlap,
+  ]);
+
+  useEffect(() => {
+    if (!realtimeFlightPreviewEnabled) return;
+    if (!activeMissionId || !activeMission?.aoi || activeMission.missionType !== 'area') return;
+    if (!selectedCamera || speed <= 0) return;
+
+    const requestId = ++realtimePreviewRequestRef.current;
+    const missionCoordinates = activeMission.aoi.coordinates.map((coord) => [...coord]);
+
+    if (realtimePreviewFrameRef.current !== null) {
+      cancelAnimationFrame(realtimePreviewFrameRef.current);
+    }
+
+    realtimePreviewFrameRef.current = requestAnimationFrame(() => {
+      if (requestId !== realtimePreviewRequestRef.current) return;
+
+      const applyRealtimePreview = async () => {
+        const { convertedLines, calculatedPlan } = await buildTerrainAdjustedAreaPlan(missionCoordinates);
+
+        if (requestId !== realtimePreviewRequestRef.current) return;
+
+        updateMission(activeMissionId, {
+          flightLines: convertedLines,
+        });
+        setFlightPlan(calculatedPlan);
+      };
+
+      applyRealtimePreview().catch((error) => {
+        console.error('Realtime flight preview update failed:', error);
+      });
+    });
+
+    return () => {
+      if (realtimePreviewFrameRef.current !== null) {
+        cancelAnimationFrame(realtimePreviewFrameRef.current);
+        realtimePreviewFrameRef.current = null;
+      }
+    };
+  }, [
+    realtimeFlightPreviewEnabled,
+    activeMissionId,
+    activeMission?.missionType,
+    activeMission?.aoi,
+    selectedCamera,
+    altitude,
+    speed,
+    forwardOverlap,
+    sideOverlap,
+    flightAngle,
+    updateMission,
+  ]);
 
   const handleDroneChange = (droneId: string) => {
     const drone = DRONES.find((d) => d.id === droneId);
@@ -478,71 +650,14 @@ export const FlightPlanner = () => {
     }
 
     try {
-      // Calculate line spacing and photo interval from flight parameters
-      const footprintWidth = (selectedCamera.sensorWidth * altitude) / selectedCamera.focalLength;
-      const footprintHeight = (selectedCamera.sensorHeight * altitude) / selectedCamera.focalLength;
-      
-      console.log('Flight plan parameters:', {
-        altitude,
-        speed,
-        forwardOverlap,
-        sideOverlap,
-        flightAngle,
-        footprintWidth,
-        footprintHeight,
-        camera: selectedCamera.name
-      });
-      
-      const lineSpacing = footprintWidth * (1 - sideOverlap / 100);
-      const photoInterval = (footprintHeight * (1 - forwardOverlap / 100)) / speed;
-
-      console.log('Calculated values:', { lineSpacing, photoInterval });
-
-      const flightPlanResult = generateFlightLines(
-        activeMission.aoi.coordinates,
-        lineSpacing,
-        flightAngle,
-        altitude,
-        photoInterval,
-        speed
+      const { flightPlanResult, convertedLines, calculatedPlan } = await buildTerrainAdjustedAreaPlan(
+        activeMission.aoi.coordinates
       );
-
-      console.log('Flight plan result:', flightPlanResult);
-
-      // Get Cesium viewer for terrain sampling
-      const viewer = getCesiumViewer();
-      
-      // Convert FlightLine format and apply terrain-following
-      const convertedLines = await Promise.all(
-        flightPlanResult.lines.map(async (line) => {
-          const waypoints = line.waypoints.map(wp => [wp.lon, wp.lat, wp.alt]);
-          
-          // Apply terrain-following if terrain data is available
-          const terrainWaypoints = viewer 
-            ? await sampleTerrainForWaypoints(viewer, waypoints, altitude)
-            : waypoints;
-          
-          const photoPoints = line.waypoints
-            .filter(wp => wp.action === 'photo')
-            .map((wp) => {
-              const wpIndex = line.waypoints.indexOf(wp);
-              return terrainWaypoints[wpIndex];
-            });
-          
-          return {
-            id: line.id,
-            coordinates: terrainWaypoints,
-            photoPoints: photoPoints,
-          };
-        })
-      );
-
-      console.log('Converted lines with terrain-following:', convertedLines);
-      console.log('Active mission before update:', activeMission);
 
       updateMission(activeMissionId, {
         flightLines: convertedLines,
       });
+      setFlightPlan(calculatedPlan);
       
       // Verify update
       setTimeout(() => {
@@ -644,6 +759,15 @@ export const FlightPlanner = () => {
                     💾
                   </button>
                 </div>
+                <label className="inline-toggle waypoint-guide-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showAreaHeightGuides}
+                    onChange={(e) => setShowAreaHeightGuides(e.target.checked)}
+                    disabled={!kmlEditMode}
+                  />
+                  Height guides
+                </label>
               </div>
             )}
           </div>
@@ -826,38 +950,84 @@ export const FlightPlanner = () => {
               <>
                 <label>
                   Forward Overlap (%):
-                  <input
-                    type="number"
-                    value={forwardOverlap}
-                    onChange={(e) => setForwardOverlap(Number(e.target.value))}
-                    min="50"
-                    max="95"
-                    step="5"
-                  />
+                  <div className="range-control-row">
+                    <input
+                      className="range-number-input"
+                      type="number"
+                      value={forwardOverlap}
+                      onChange={(e) => setForwardOverlap(Number(e.target.value))}
+                      min="1"
+                      max="99"
+                      step="1"
+                    />
+                    <input
+                      className="range-slider-input"
+                      type="range"
+                      value={forwardOverlap}
+                      onChange={(e) => setForwardOverlap(Number(e.target.value))}
+                      min="1"
+                      max="99"
+                      step="1"
+                    />
+                  </div>
                 </label>
 
                 <label>
                   Side Overlap (%):
-                  <input
-                    type="number"
-                    value={sideOverlap}
-                    onChange={(e) => setSideOverlap(Number(e.target.value))}
-                    min="50"
-                    max="90"
-                    step="5"
-                  />
+                  <div className="range-control-row">
+                    <input
+                      className="range-number-input"
+                      type="number"
+                      value={sideOverlap}
+                      onChange={(e) => setSideOverlap(Number(e.target.value))}
+                      min="1"
+                      max="99"
+                      step="1"
+                    />
+                    <input
+                      className="range-slider-input"
+                      type="range"
+                      value={sideOverlap}
+                      onChange={(e) => setSideOverlap(Number(e.target.value))}
+                      min="1"
+                      max="99"
+                      step="1"
+                    />
+                  </div>
                 </label>
 
                 <label>
-                  Flight Angle (°):
+                  Flight Direction (°):
+                  <div className="range-control-row">
+                    <input
+                      className="range-number-input"
+                      type="number"
+                      value={flightAngle}
+                      onChange={(e) => setFlightAngle(Number(e.target.value))}
+                      min="0"
+                      max="360"
+                      step="1"
+                    />
+                    <input
+                      className="range-slider-input"
+                      type="range"
+                      value={flightAngle}
+                      onChange={(e) => setFlightAngle(Number(e.target.value))}
+                      min="0"
+                      max="360"
+                      step="1"
+                    />
+                  </div>
+                </label>
+
+                <label className="inline-toggle">
                   <input
-                    type="number"
-                    value={flightAngle}
-                    onChange={(e) => setFlightAngle(Number(e.target.value))}
-                    min="0"
-                    max="359"
-                    step="1"
+                    type="checkbox"
+                    checked={realtimeFlightPreviewEnabled}
+                    onChange={(e) => setRealtimeFlightPreviewEnabled(e.target.checked)}
+                    disabled={activeMission?.missionType !== 'area' || !activeMission?.aoi}
                   />
+                  Realtime update while sliding
                 </label>
               </>
             )}

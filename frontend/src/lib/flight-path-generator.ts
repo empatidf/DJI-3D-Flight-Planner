@@ -200,12 +200,18 @@ export const generateFlightLines = (
   // Calculate bounding box
   const [minLon, minLat, maxLon, maxLat] = calculateBBox(polygon);
   const center: [number, number] = [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
+
+  // UI/input convention: 0° = North, 90° = East (clockwise from North)
+  // Internal 2D rotation convention here: 0° = +X/East (counterclockwise-positive)
+  // Convert so flightDirection behaves as labeled in UI.
+  const normalizedFlightAngle = ((flightAngle % 360) + 360) % 360;
+  const mathAngle = 90 - normalizedFlightAngle;
   
   console.log('Bounding box:', { minLon, minLat, maxLon, maxLat, center });
   
   // Rotate everything to align with flight angle
   const rotatedPolygon = polygon.map((point) =>
-    rotatePoint([point[0], point[1]], center, -flightAngle)
+    rotatePoint([point[0], point[1]], center, -mathAngle)
   );
   
   const [rotMinLon, rotMinLat, rotMaxLon, rotMaxLat] = calculateBBox(rotatedPolygon);
@@ -248,7 +254,7 @@ export const generateFlightLines = (
     
     // Rotate back to original orientation
     let [start, end] = clippedPoints.map((point) =>
-      rotatePoint(point, center, flightAngle)
+      rotatePoint(point, center, mathAngle)
     );
     
     // Alternate direction for serpentine pattern

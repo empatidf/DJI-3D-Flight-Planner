@@ -3,7 +3,7 @@
  * Main 3D/2D visualization component using CesiumJS
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Viewer,
   Ion,
@@ -24,17 +24,32 @@ import {
   CallbackProperty,
   ConstantPositionProperty,
   CallbackPositionProperty,
+  CartographicGeocoderService,
+  IonGeocoderService,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
 import { sampleTerrainForWaypoints } from '../lib/terrain-sampler';
 
-// Set Cesium Ion access token
-Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJhYjM3ZjBkMy0wZWFiLTQzNzYtYjk5Zi1mZDU4NzZhZGZkMmUiLCJpZCI6Mzg5Nzk1LCJpYXQiOjE3NzA4NTExMzd9.LATM9S0nkja1YrqNanCBDYhse2_bX-CqIa5rgkhIXNQ';
+Ion.defaultAccessToken = '';
 
 export const CesiumMap = () => {
   const viewerRef = useRef<Viewer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const compassArrowRef = useRef<HTMLDivElement>(null);
+  const [contextMenuState, setContextMenuState] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    lon: number;
+    lat: number;
+  }>({
+    visible: false,
+    x: 0,
+    y: 0,
+    lon: 0,
+    lat: 0,
+  });
   const editCoordinatesRef = useRef<number[][] | null>(null);
   const editAltitudeRef = useRef<number>(100);
   const editActiveMissionIdRef = useRef<string | null>(null);
@@ -43,6 +58,9 @@ export const CesiumMap = () => {
   const drawHoverRef = useRef<number[] | null>(null);
   const missionAoiRenderVersionRef = useRef<number>(0);
   const missionAoiTerrainCacheRef = useRef<Record<string, { coordKey: string; baseHeights: number[] }>>({});
+  const lastAutoFocusedMissionIdRef = useRef<string | null>(null);
+  const worldImageryLayerRef = useRef<ImageryLayer | null>(null);
+  const worldLabelsLayerRef = useRef<ImageryLayer | null>(null);
   const viewMode = useMissionStore((state) => state.viewMode);
   const cameraTarget = useMissionStore((state) => state.cameraTarget);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
@@ -51,11 +69,13 @@ export const CesiumMap = () => {
   const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
   const drawAoiMode = useMissionStore((state) => state.drawAoiMode);
   const drawWaypointMode = useMissionStore((state) => state.drawWaypointMode);
+  const showAreaHeightGuides = useMissionStore((state) => state.showAreaHeightGuides);
   const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
   const updateMission = useMissionStore((state) => state.updateMission);
   const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
   const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
   const layers = useMissionStore((state) => state.layers);
+  const cesiumToken = useMissionStore((state) => state.cesiumToken);
 
   const getLonLatFromScreenPosition = (viewer: Viewer, position: Cartesian2) => {
     let cartesian: Cartesian3 | undefined;
@@ -87,12 +107,24 @@ export const CesiumMap = () => {
     };
   };
 
+  const updateGeocoderServices = (viewer: Viewer, includeIon: boolean) => {
+    if (!viewer.geocoder) return;
+
+    const geocoderServices = [new CartographicGeocoderService()];
+    if (includeIon) {
+      geocoderServices.unshift(new IonGeocoderService({ scene: viewer.scene }));
+    }
+
+    ((viewer.geocoder.viewModel as unknown) as { geocoderServices: unknown[] }).geocoderServices = geocoderServices;
+  };
+
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return;
 
-    // Initialize Cesium Viewer with default satellite imagery
+    // Initialize Cesium Viewer (default world is loaded after token is provided)
     const viewer = new Viewer(containerRef.current, {
       baseLayerPicker: false,
+      baseLayer: false,
       
       // UI elements
       animation: false,
@@ -109,12 +141,6 @@ export const CesiumMap = () => {
       maximumRenderTimeChange: Infinity,
     });
     
-    // Cesium Viewer comes with Bing Maps satellite imagery by default
-    // Add labels layer on top for city names and features
-    IonImageryProvider.fromAssetId(3).then((labelsProvider) => {
-      viewer.imageryLayers.addImageryProvider(labelsProvider); // Bing Maps Road Labels
-    });
-
     // Set initial terrain provider to flat ellipsoid
     // Will be toggled by Layer Manager terrain checkbox
     viewer.terrainProvider = new EllipsoidTerrainProvider();
@@ -139,6 +165,30 @@ export const CesiumMap = () => {
     });
 
     viewerRef.current = viewer;
+
+    let compassAngleDegrees = 0;
+
+    const updateCompassHeading = () => {
+      if (!compassArrowRef.current) return;
+
+      const headingDegrees = CesiumMath.toDegrees(viewer.camera.heading);
+      if (!Number.isFinite(headingDegrees)) return;
+
+      const targetAngle = -headingDegrees;
+      let delta = targetAngle - compassAngleDegrees;
+
+      while (delta > 180) delta -= 360;
+      while (delta < -180) delta += 360;
+
+      compassAngleDegrees += delta;
+      compassArrowRef.current.style.transform = `translateZ(0) rotate(${compassAngleDegrees}deg)`;
+    };
+
+    updateCompassHeading();
+    viewer.scene.postRender.addEventListener(updateCompassHeading);
+
+    // Support both coordinates and address search
+    updateGeocoderServices(viewer, !!cesiumToken.trim());
     
     // Store viewer globally for terrain sampling access
     // @ts-ignore
@@ -146,12 +196,147 @@ export const CesiumMap = () => {
 
     // Cleanup
     return () => {
+      viewer.scene.postRender.removeEventListener(updateCompassHeading);
       if (viewerRef.current) {
         viewerRef.current.destroy();
         viewerRef.current = null;
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!contextMenuState.visible) return;
+
+    const closeMenu = () => {
+      setContextMenuState((prev) => ({ ...prev, visible: false }));
+    };
+
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('resize', closeMenu);
+    window.addEventListener('scroll', closeMenu, true);
+
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('resize', closeMenu);
+      window.removeEventListener('scroll', closeMenu, true);
+    };
+  }, [contextMenuState.visible]);
+
+  const handleMapContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+
+    if (drawAoiMode || drawWaypointMode) {
+      setContextMenuState((prev) => ({ ...prev, visible: false }));
+      return;
+    }
+
+    const viewer = viewerRef.current;
+    const container = containerRef.current;
+    if (!viewer || !container) return;
+
+    const rect = container.getBoundingClientRect();
+    const position = new Cartesian2(event.clientX - rect.left, event.clientY - rect.top);
+    const lonLat = getLonLatFromScreenPosition(viewer, position);
+
+    if (!lonLat) {
+      setContextMenuState((prev) => ({ ...prev, visible: false }));
+      return;
+    }
+
+    setContextMenuState({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      lon: lonLat.lon,
+      lat: lonLat.lat,
+    });
+  };
+
+  const handleCopyClickedCoordinate = async () => {
+    if (!contextMenuState.visible) return;
+
+    const coordinateText = `${contextMenuState.lat.toFixed(7)}, ${contextMenuState.lon.toFixed(7)}`;
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(coordinateText);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = coordinateText;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (!copied) {
+          throw new Error('Fallback copy command was rejected');
+        }
+      }
+    } catch {
+      window.prompt('Copy coordinates (Ctrl+C, Enter):', coordinateText);
+    }
+
+    setContextMenuState((prev) => ({ ...prev, visible: false }));
+  };
+
+  // Load default world layers only when a valid token is present
+  useEffect(() => {
+    if (!viewerRef.current) return;
+
+    const viewer = viewerRef.current;
+
+    const removeWorldLayers = () => {
+      if (worldImageryLayerRef.current) {
+        viewer.imageryLayers.remove(worldImageryLayerRef.current, true);
+        worldImageryLayerRef.current = null;
+      }
+      if (worldLabelsLayerRef.current) {
+        viewer.imageryLayers.remove(worldLabelsLayerRef.current, true);
+        worldLabelsLayerRef.current = null;
+      }
+    };
+
+    removeWorldLayers();
+
+    const token = cesiumToken.trim();
+    if (!token) {
+      Ion.defaultAccessToken = '';
+      updateGeocoderServices(viewer, false);
+      viewer.scene.requestRender();
+      return;
+    }
+
+    Ion.defaultAccessToken = token;
+    updateGeocoderServices(viewer, true);
+    let cancelled = false;
+
+    const loadWorldLayers = async () => {
+      try {
+        const imageryProvider = await IonImageryProvider.fromAssetId(2);
+        if (cancelled || !viewerRef.current) return;
+        worldImageryLayerRef.current = viewer.imageryLayers.addImageryProvider(imageryProvider, 0);
+
+        const labelsProvider = await IonImageryProvider.fromAssetId(3);
+        if (cancelled || !viewerRef.current) return;
+        worldLabelsLayerRef.current = viewer.imageryLayers.addImageryProvider(labelsProvider);
+
+        viewer.scene.requestRender();
+      } catch (error) {
+        console.error('Failed to load Cesium world layers:', error);
+      }
+    };
+
+    loadWorldLayers();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cesiumToken]);
 
   // Handle view mode changes
   useEffect(() => {
@@ -197,6 +382,56 @@ export const CesiumMap = () => {
     });
   }, [cameraTarget, setCameraTarget]);
 
+  // Auto-focus active mission on refresh and when selected mission changes
+  useEffect(() => {
+    if (!viewerRef.current) return;
+    if (!activeMissionId) {
+      lastAutoFocusedMissionIdRef.current = null;
+      return;
+    }
+    if (cameraTarget) return;
+    if (lastAutoFocusedMissionIdRef.current === activeMissionId) return;
+
+    const activeMission = missions.find((mission) => mission.id === activeMissionId);
+    if (!activeMission) return;
+
+    const sourceCoordinates =
+      activeMission.aoi?.coordinates?.length
+        ? activeMission.aoi.coordinates
+        : (activeMission.flightLines ?? []).flatMap((line) => line.coordinates ?? []);
+
+    const validCoordinates = sourceCoordinates.filter(
+      (coord): coord is number[] => !!coord && Number.isFinite(coord[0]) && Number.isFinite(coord[1])
+    );
+
+    if (validCoordinates.length === 0) return;
+
+    const lons = validCoordinates.map((coord) => coord[0]);
+    const lats = validCoordinates.map((coord) => coord[1]);
+
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+
+    const centerLon = (minLon + maxLon) / 2;
+    const centerLat = (minLat + maxLat) / 2;
+    const span = Math.max(maxLon - minLon, maxLat - minLat);
+    const focusAltitude = Math.max(800, span * 140000);
+
+    viewerRef.current.camera.flyTo({
+      destination: Cartesian3.fromDegrees(centerLon, centerLat, focusAltitude),
+      orientation: {
+        heading: CesiumMath.toRadians(0),
+        pitch: CesiumMath.toRadians(-90),
+        roll: 0,
+      },
+      duration: 1.5,
+    });
+
+    lastAutoFocusedMissionIdRef.current = activeMissionId;
+  }, [activeMissionId, missions, cameraTarget]);
+
   // Handle terrain visibility
   useEffect(() => {
     if (!viewerRef.current) return;
@@ -232,6 +467,7 @@ export const CesiumMap = () => {
     const viewer = viewerRef.current;
     const renderVersion = ++missionAoiRenderVersionRef.current;
     const activeAoiEntityIds = new Set<string>();
+    const terrainLayerVisible = layers.some((layer) => layer.id === 'terrain' && layer.visible);
 
     // Add polygons for visible missions with AOI
     missions.forEach((mission) => {
@@ -269,7 +505,16 @@ export const CesiumMap = () => {
         ? coordinates.map((coord, index) =>
             Cartesian3.fromDegrees(coord[0], coord[1], cachedTerrain.baseHeights[index] + missionAltitude)
           )
-        : fallbackPositions;
+        : terrainLayerVisible
+          ? coordinates.map((coord) => {
+              const quickTerrainHeight = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
+              const terrainBase =
+                typeof quickTerrainHeight === 'number' && Number.isFinite(quickTerrainHeight)
+                  ? quickTerrainHeight
+                  : 0;
+              return Cartesian3.fromDegrees(coord[0], coord[1], terrainBase + missionAltitude);
+            })
+          : fallbackPositions;
 
       const closedFallbackPositions = [...immediatePositions, immediatePositions[0]];
 
@@ -392,6 +637,8 @@ export const CesiumMap = () => {
 
     let pointEntities: Entity[] = [];
     let addPointEntities: Entity[] = [];
+    let guideLineEntities: Entity[] = [];
+    let guideLabelEntities: Entity[] = [];
     let deletePointEntity: Entity | null = null;
     let selectedPointIndex: number | null = null;
 
@@ -428,11 +675,31 @@ export const CesiumMap = () => {
       return Cartesian3.fromDegrees(midpointLon, midpointLat, midpointAlt);
     };
 
+    const getTerrainHeightAt = (coord: number[]) => {
+      const globeHeight = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
+      return typeof globeHeight === 'number' && Number.isFinite(globeHeight) ? globeHeight : 0;
+    };
+
+    const toVerticalText = (height: number) => `${height.toFixed(1)}m`.split('').join('\n');
+
+    const getDjiRelativeHeightAt = (index: number) => {
+      const coords = editCoordinatesRef.current;
+      if (!coords || !coords[index]) return missionAltitude;
+
+      const firstAltitude = Number.isFinite(coords[0][2]) ? coords[0][2] : missionAltitude;
+      const pointAltitude = Number.isFinite(coords[index][2]) ? coords[index][2] : missionAltitude;
+      return missionAltitude + (pointAltitude - firstAltitude);
+    };
+
     const rebuildEditHandles = () => {
       removeEntityGroup(pointEntities);
       removeEntityGroup(addPointEntities);
+      removeEntityGroup(guideLineEntities);
+      removeEntityGroup(guideLabelEntities);
       pointEntities = [];
       addPointEntities = [];
+      guideLineEntities = [];
+      guideLabelEntities = [];
 
       if (deletePointEntity) {
         viewer.entities.remove(deletePointEntity);
@@ -471,6 +738,55 @@ export const CesiumMap = () => {
           },
         });
       });
+
+      if (showAreaHeightGuides) {
+        guideLineEntities = coords.map((_, index) => {
+          return viewer.entities.add({
+            id: `kml-edit-guide-line-${activeMissionId}-${index}`,
+            polyline: {
+              positions: new CallbackProperty(() => {
+                const current = editCoordinatesRef.current?.[index];
+                if (!current) return [];
+                const terrainHeight = getTerrainHeightAt(current);
+                return [
+                  Cartesian3.fromDegrees(current[0], current[1], current[2]),
+                  Cartesian3.fromDegrees(current[0], current[1], terrainHeight),
+                ];
+              }, false),
+              width: 2,
+              material: Color.CYAN.withAlpha(0.75),
+              clampToGround: false,
+              arcType: 0,
+            },
+          });
+        });
+
+        guideLabelEntities = coords.map((_, index) => {
+          return viewer.entities.add({
+            id: `kml-edit-guide-label-${activeMissionId}-${index}`,
+            position: new CallbackPositionProperty(() => {
+              const current = editCoordinatesRef.current?.[index];
+              if (!current) return Cartesian3.fromDegrees(0, 0, missionAltitude);
+              const terrainHeight = getTerrainHeightAt(current);
+              const midHeight = (current[2] + terrainHeight) / 2;
+              return Cartesian3.fromDegrees(current[0], current[1], midHeight);
+            }, false),
+            label: {
+              text: new CallbackProperty(() => {
+                const current = editCoordinatesRef.current?.[index];
+                if (!current) return '';
+                return toVerticalText(getDjiRelativeHeightAt(index));
+              }, false),
+              font: 'bold 11px sans-serif',
+              fillColor: Color.WHITE,
+              outlineColor: Color.BLACK,
+              outlineWidth: 2,
+              pixelOffset: new Cartesian2(8, 0),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+          });
+        });
+      }
 
       if (selectedPointIndex !== null && coords.length > 3) {
         deletePointEntity = viewer.entities.add({
@@ -604,13 +920,15 @@ export const CesiumMap = () => {
       }
       removeEntityGroup(pointEntities);
       removeEntityGroup(addPointEntities);
+      removeEntityGroup(guideLineEntities);
+      removeEntityGroup(guideLabelEntities);
       if (deletePointEntity) {
         viewer.entities.remove(deletePointEntity);
       }
       editCoordinatesRef.current = null;
       editActiveMissionIdRef.current = null;
     };
-  }, [activeMissionId, kmlEditMode, updateMission]);
+  }, [activeMissionId, kmlEditMode, showAreaHeightGuides, updateMission]);
 
   // Waypoint line editing for imported waypoint missions
   useEffect(() => {
@@ -1178,6 +1496,7 @@ export const CesiumMap = () => {
             const terrainProvider = await CesiumTerrainProvider.fromIonAssetId(layer.cesiumAssetId);
             viewer.terrainProvider = terrainProvider;
             console.log(`Applied Cesium Ion TERRAIN: ${layer.name} (Asset: ${layer.cesiumAssetId})`);
+            viewer.scene.requestRender();
             // Terrain doesn't use imagery layers, so skip the rest
             return;
           } else {
@@ -1203,9 +1522,10 @@ export const CesiumMap = () => {
         
         // Move custom layers to top (above basemap and labels)
         viewer.imageryLayers.raise(imageryLayer);
+        viewer.scene.requestRender();
       }
     });
-  }, [layers]);
+  }, [layers, cesiumToken, cameraTarget]);
 
   // Render flight lines and waypoints
   useEffect(() => {
@@ -1220,14 +1540,13 @@ export const CesiumMap = () => {
     }
 
     const viewer = viewerRef.current;
+    const activeLineEntityIds = new Set<string>();
     
-    // Remove existing flight line entities
+    // Remove dynamic point/guide entities (line entities are updated in-place)
     const entitiesToRemove: Entity[] = [];
     viewer.entities.values.forEach((entity) => {
       if (typeof entity.id !== 'string') return;
       if (
-        entity.id.startsWith('flight-line-') ||
-        entity.id.startsWith('flight-connector-') ||
         entity.id.startsWith('waypoint-guide-line-') ||
         entity.id.startsWith('waypoint-guide-label-') ||
         entity.id.startsWith('waypoint-')
@@ -1286,6 +1605,7 @@ export const CesiumMap = () => {
 
       const firstLineRef = drawableLines[0];
       const lastLineRef = drawableLines[drawableLines.length - 1];
+      const firstMissionCoord = firstLineRef.safeCoordinates[0];
       const firstWaypointRef = {
         lineIndex: firstLineRef.lineIndex,
         wpIndex: 0,
@@ -1312,19 +1632,28 @@ export const CesiumMap = () => {
           
           console.log(`  Creating polyline with ${positions.length} positions`);
 
-          const polylineEntity = viewer.entities.add({
-            id: `flight-line-${mission.id}-${lineIndex}`,
-            name: `Flight Line ${lineIndex + 1}`,
-            polyline: {
-              positions: positions,
-              width: 4,
-              material: Color.YELLOW,
-              clampToGround: false,
-              arcType: 0, // NONE - straight lines
-            },
-          });
+          const lineEntityId = `flight-line-${mission.id}-${lineIndex}`;
+          activeLineEntityIds.add(lineEntityId);
+
+          const existingLineEntity = viewer.entities.getById(lineEntityId);
+          if (existingLineEntity?.polyline) {
+            existingLineEntity.name = `Flight Line ${lineIndex + 1}`;
+            existingLineEntity.polyline.positions = new CallbackProperty(() => positions, false);
+          } else {
+            viewer.entities.add({
+              id: lineEntityId,
+              name: `Flight Line ${lineIndex + 1}`,
+              polyline: {
+                positions: positions,
+                width: 4,
+                material: Color.YELLOW,
+                clampToGround: false,
+                arcType: 0,
+              },
+            });
+          }
           
-          console.log(`  ✓ Created polyline entity: ${polylineEntity.id}`);
+          console.log(`  ✓ Updated polyline entity: ${lineEntityId}`);
           totalLinesRendered++;
         }
 
@@ -1333,28 +1662,39 @@ export const CesiumMap = () => {
           const currentLast = safeCoordinates[safeCoordinates.length - 1];
           const nextFirst = drawableLines[drawableIndex + 1].safeCoordinates[0];
           if (currentLast && nextFirst) {
-            viewer.entities.add({
-              id: `flight-connector-${mission.id}-${drawableIndex}`,
-              name: `Flight Connector ${drawableIndex + 1}`,
-              polyline: {
-                positions: [
-                  Cartesian3.fromDegrees(
-                    currentLast[0],
-                    currentLast[1],
-                    Number.isFinite(currentLast[2]) ? currentLast[2] : missionAltitude
-                  ),
-                  Cartesian3.fromDegrees(
-                    nextFirst[0],
-                    nextFirst[1],
-                    Number.isFinite(nextFirst[2]) ? nextFirst[2] : missionAltitude
-                  ),
-                ],
-                width: 3,
-                material: Color.YELLOW.withAlpha(0.9),
-                clampToGround: false,
-                arcType: 0,
-              },
-            });
+            const connectorEntityId = `flight-connector-${mission.id}-${drawableIndex}`;
+            activeLineEntityIds.add(connectorEntityId);
+
+            const connectorPositions = [
+              Cartesian3.fromDegrees(
+                currentLast[0],
+                currentLast[1],
+                Number.isFinite(currentLast[2]) ? currentLast[2] : missionAltitude
+              ),
+              Cartesian3.fromDegrees(
+                nextFirst[0],
+                nextFirst[1],
+                Number.isFinite(nextFirst[2]) ? nextFirst[2] : missionAltitude
+              ),
+            ];
+
+            const existingConnector = viewer.entities.getById(connectorEntityId);
+            if (existingConnector?.polyline) {
+              existingConnector.name = `Flight Connector ${drawableIndex + 1}`;
+              existingConnector.polyline.positions = new CallbackProperty(() => connectorPositions, false);
+            } else {
+              viewer.entities.add({
+                id: connectorEntityId,
+                name: `Flight Connector ${drawableIndex + 1}`,
+                polyline: {
+                  positions: connectorPositions,
+                  width: 3,
+                  material: Color.YELLOW.withAlpha(0.9),
+                  clampToGround: false,
+                  arcType: 0,
+                },
+              });
+            }
           }
         }
 
@@ -1406,13 +1746,17 @@ export const CesiumMap = () => {
               : undefined,
           });
 
-          if (mission.missionType === 'waypoint' && showWaypointHeightGuides) {
+          const shouldShowHeightGuides =
+            (mission.missionType === 'waypoint' && showWaypointHeightGuides) ||
+            (mission.missionType === 'area' && showAreaHeightGuides);
+
+          if (shouldShowHeightGuides) {
             const terrainHeightRaw = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
             const terrainHeight = typeof terrainHeightRaw === 'number' && Number.isFinite(terrainHeightRaw)
               ? terrainHeightRaw
               : 0;
 
-            const firstCoord = safeCoordinates[0];
+            const firstCoord = mission.missionType === 'area' ? firstMissionCoord : safeCoordinates[0];
             const firstAltitude = Number.isFinite(firstCoord?.[2]) ? firstCoord[2] : missionAltitude;
             const pointAltitude = Number.isFinite(coord[2]) ? coord[2] : missionAltitude;
             const djiRelativeHeight = missionAltitude + (pointAltitude - firstAltitude);
@@ -1448,19 +1792,57 @@ export const CesiumMap = () => {
         });
       });
     });
+
+    const staleLineEntities: Entity[] = [];
+    viewer.entities.values.forEach((entity) => {
+      if (typeof entity.id !== 'string') return;
+      if (
+        (entity.id.startsWith('flight-line-') || entity.id.startsWith('flight-connector-')) &&
+        !activeLineEntityIds.has(entity.id)
+      ) {
+        staleLineEntities.push(entity);
+      }
+    });
+    staleLineEntities.forEach((entity) => viewer.entities.remove(entity));
+    viewer.scene.requestRender();
     
     console.log(`=== RENDER COMPLETE: ${totalLinesRendered} flight lines rendered ===`);
     console.log(`Total entities in viewer: ${viewer.entities.values.length}`);
-  }, [missions, kmlEditMode, activeMissionId, showWaypointHeightGuides]);
+  }, [missions, kmlEditMode, activeMissionId, showWaypointHeightGuides, showAreaHeightGuides]);
 
   return (
-    <div 
-      ref={containerRef}
+    <div
       style={{
         width: '100%',
         height: '100vh',
         position: 'relative',
       }}
-    />
+      onContextMenu={handleMapContextMenu}
+    >
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <div className="compass-overlay" aria-label="North compass">
+        <div ref={compassArrowRef} className="compass-arrow">
+          <span className="compass-arrow-icon">▲</span>
+          <span className="compass-arrow-label">N</span>
+        </div>
+      </div>
+      {contextMenuState.visible && (
+        <div
+          className="map-context-menu"
+          style={{
+            left: `${contextMenuState.x}px`,
+            top: `${contextMenuState.y}px`,
+          }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button type="button" className="map-context-menu-item" onClick={handleCopyClickedCoordinate}>
+            Copy coordinates
+          </button>
+          <div className="map-context-menu-coord">
+            {contextMenuState.lat.toFixed(7)}, {contextMenuState.lon.toFixed(7)}
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
