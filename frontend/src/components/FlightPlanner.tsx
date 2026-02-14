@@ -10,6 +10,7 @@ import { useMissionStore } from '../stores/mission-store';
 import { importKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
 import { getCesiumViewer, sampleTerrainForWaypoints } from '../lib/terrain-sampler';
+import { exportToDJI, downloadKMZ } from '../lib/dji-wpml-exporter';
 import './FlightPlanner.css';
 
 export const FlightPlanner = () => {
@@ -99,6 +100,32 @@ export const FlightPlanner = () => {
     
     setStatusMessage('Flight parameters saved!');
     setTimeout(() => setStatusMessage(''), 3000);
+  };
+
+  const handleExportToDJI = async () => {
+    if (!activeMission) {
+      setStatusMessage('Please select a mission first');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    if (!activeMission.flightLines || activeMission.flightLines.length === 0) {
+      setStatusMessage('Generate flight plan first');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    try {
+      setStatusMessage('Exporting to DJI WPML format...');
+      const kmzBlob = await exportToDJI(activeMission);
+      downloadKMZ(kmzBlob, activeMission.name || 'mission');
+      setStatusMessage('✓ Export successful! File downloaded.');
+      setTimeout(() => setStatusMessage(''), 3000);
+    } catch (error) {
+      console.error('Export error:', error);
+      setStatusMessage(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setTimeout(() => setStatusMessage(''), 5000);
+    }
   };
 
   const handleImportKML = async () => {
@@ -561,6 +588,7 @@ export const FlightPlanner = () => {
         
         <button 
           className="btn-secondary"
+          onClick={() => handleExportToDJI()}
           disabled={!activeMission?.flightLines || activeMission.flightLines.length === 0}
           title={!activeMission?.flightLines?.length ? 'Generate flight plan first' : 'Export to DJI Pilot 2'}
         >
