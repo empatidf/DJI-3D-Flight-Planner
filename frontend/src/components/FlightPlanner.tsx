@@ -53,6 +53,7 @@ export const FlightPlanner = () => {
   const [showPhotogrammetry, setShowPhotogrammetry] = useState<boolean>(true);
   const [showWaypointSettings, setShowWaypointSettings] = useState<boolean>(true);
   const [realtimeFlightPreviewEnabled, setRealtimeFlightPreviewEnabled] = useState<boolean>(false);
+  const [isPanelCollapsed, setIsPanelCollapsed] = useState<boolean>(false);
 
   const [flightPlan, setFlightPlan] = useState<any>(null);
   const realtimePreviewFrameRef = useRef<number | null>(null);
@@ -680,18 +681,39 @@ export const FlightPlanner = () => {
   // Check if no mission is selected
   if (!activeMissionId) {
     return (
-      <div className="flight-planner">
-        <h2>Flight Planning</h2>
-        <div className="empty-state">
-          <p>No mission selected.</p>
-          <p>Create or select a mission from the Mission Manager to start planning.</p>
+      <div className={`flight-planner ${isPanelCollapsed ? 'is-collapsed' : ''}`}>
+        <button
+          type="button"
+          className="flight-planner-toggle"
+          onClick={() => setIsPanelCollapsed((prev) => !prev)}
+          title={isPanelCollapsed ? 'Show Flight Planning panel' : 'Hide Flight Planning panel'}
+          aria-label={isPanelCollapsed ? 'Show Flight Planning panel' : 'Hide Flight Planning panel'}
+        >
+          {isPanelCollapsed ? '❮' : '❯'}
+        </button>
+        <div className="flight-planner-content">
+          <h2>Flight Planning</h2>
+          <div className="empty-state">
+            <p>No mission selected.</p>
+            <p>Create or select a mission from the Mission Manager to start planning.</p>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flight-planner">
+    <div className={`flight-planner ${isPanelCollapsed ? 'is-collapsed' : ''}`}>
+      <button
+        type="button"
+        className="flight-planner-toggle"
+        onClick={() => setIsPanelCollapsed((prev) => !prev)}
+        title={isPanelCollapsed ? 'Show Flight Planning panel' : 'Hide Flight Planning panel'}
+        aria-label={isPanelCollapsed ? 'Show Flight Planning panel' : 'Hide Flight Planning panel'}
+      >
+        {isPanelCollapsed ? '❮' : '❯'}
+      </button>
+      <div className="flight-planner-content">
       <h2>Flight Planning</h2>
 
       {/* Status Messages */}
@@ -1272,6 +1294,7 @@ export const FlightPlanner = () => {
           📤 Export to DJI
         </button>
       </section>
+      </div>
     </div>
   );
 };

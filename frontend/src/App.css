@@ -43,7 +43,8 @@ body {
   transform: translateX(-50%) !important;
   float: none !important;
   margin: 0 !important;
-  width: min(560px, calc(100vw - 460px));
+  width: clamp(240px, 34vw, 560px);
+  max-width: calc(100vw - 24px);
   z-index: 1002;
 }
 
@@ -53,7 +54,14 @@ body {
 
 @media (max-width: 1024px) {
   .cesium-viewer-geocoderContainer {
-    width: min(520px, calc(100vw - 40px));
+    width: clamp(220px, 48vw, 480px);
+    max-width: calc(100vw - 24px);
+  }
+}
+
+@media (max-width: 768px) {
+  .cesium-viewer-geocoderContainer {
+    width: clamp(200px, 70vw, 420px);
   }
 }
 
