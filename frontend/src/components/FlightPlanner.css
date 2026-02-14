@@ -281,6 +281,53 @@
   gap: 8px;
 }
 
+.kml-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.kml-tool-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.kml-tool-btn:hover {
+  border-color: #007bff;
+  transform: translateY(-1px);
+}
+
+.kml-tool-btn.active {
+  border-color: #007bff;
+  background: #e7f1ff;
+}
+
+.kml-tool-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.kml-delete:hover {
+  border-color: #dc3545;
+  background: #fff5f5;
+}
+
+.kml-save:hover {
+  border-color: #198754;
+  background: #f0fff4;
+}
+
 .aoi-actions button {
   width: 100%;
   padding: 8px 12px;

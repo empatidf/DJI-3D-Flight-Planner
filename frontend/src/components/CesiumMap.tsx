@@ -17,6 +17,12 @@ import {
   Entity,
   EllipsoidTerrainProvider,
   ImageryLayer,
+  Cartographic,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
+  Cartesian2,
+  CallbackProperty,
+  ConstantPositionProperty,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
@@ -28,11 +34,43 @@ Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJhYjM3Z
 export const CesiumMap = () => {
   const viewerRef = useRef<Viewer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const editCoordinatesRef = useRef<number[][] | null>(null);
+  const editAltitudeRef = useRef<number>(100);
+  const editActiveMissionIdRef = useRef<string | null>(null);
+  const editPolylineIdRef = useRef<string | null>(null);
   const viewMode = useMissionStore((state) => state.viewMode);
   const cameraTarget = useMissionStore((state) => state.cameraTarget);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
   const missions = useMissionStore((state) => state.missions);
+  const activeMissionId = useMissionStore((state) => state.activeMissionId);
+  const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
+  const updateMission = useMissionStore((state) => state.updateMission);
   const layers = useMissionStore((state) => state.layers);
+
+  const getLonLatFromScreenPosition = (viewer: Viewer, position: Cartesian2) => {
+    let cartesian: Cartesian3 | undefined;
+
+    const ray = viewer.camera.getPickRay(position);
+    if (ray) {
+      cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+    }
+
+    if (!cartesian) {
+      cartesian = viewer.camera.pickEllipsoid(position) ?? undefined;
+    }
+
+    if (!cartesian && viewer.scene.pickPositionSupported) {
+      cartesian = viewer.scene.pickPosition(position);
+    }
+
+    if (!cartesian) return null;
+
+    const cartographic = Cartographic.fromCartesian(cartesian);
+    return {
+      lon: CesiumMath.toDegrees(cartographic.longitude),
+      lat: CesiumMath.toDegrees(cartographic.latitude),
+    };
+  };
 
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return;
@@ -194,6 +232,14 @@ export const CesiumMap = () => {
       const coordinates = mission.aoi.coordinates;
       if (coordinates.length < 3) return;
 
+      const isActiveKmlEditMission =
+        kmlEditMode &&
+        mission.id === activeMissionId &&
+        mission.aoi.type === 'kml';
+
+      // Live edit overlay handles active mission in edit mode
+      if (isActiveKmlEditMission) return;
+
       // Use mission altitude for polygon elevation (AGL)
       const missionAltitude = mission.parameters.altitude;
 
@@ -221,10 +267,153 @@ export const CesiumMap = () => {
           arcType: 0, // NONE - straight lines
         },
       });
+
     });
     
     // Dependencies include missions array - any change triggers immediate re-render
-  }, [missions]);
+  }, [missions, activeMissionId, kmlEditMode]);
+
+  // KML point drag editing for active mission
+  useEffect(() => {
+    if (!viewerRef.current || !activeMissionId || !kmlEditMode) return;
+
+    const viewer = viewerRef.current;
+    const activeMission = useMissionStore
+      .getState()
+      .missions.find((mission) => mission.id === activeMissionId);
+
+    if (!activeMission?.aoi || activeMission.aoi.type !== 'kml') return;
+
+    const missionAltitude = activeMission.parameters.altitude;
+    const initialCoordinates = activeMission.aoi.coordinates.map((coord) => {
+      const altitude = Number.isFinite(coord[2]) ? coord[2] : missionAltitude;
+      return [coord[0], coord[1], altitude];
+    });
+
+    editCoordinatesRef.current = initialCoordinates;
+    editAltitudeRef.current = missionAltitude;
+    editActiveMissionIdRef.current = activeMissionId;
+
+    const outlineId = `kml-edit-outline-${activeMissionId}`;
+    editPolylineIdRef.current = outlineId;
+
+    const buildClosedPositions = (coords: number[][]) => {
+      const positions = coords.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1], coord[2]));
+      return positions.length > 0 ? [...positions, positions[0]] : positions;
+    };
+
+    viewer.entities.add({
+      id: outlineId,
+      name: `${activeMission.aoi.name} (editing)`,
+      polyline: {
+        positions: new CallbackProperty(() => {
+          const coords = editCoordinatesRef.current ?? initialCoordinates;
+          return buildClosedPositions(coords);
+        }, false),
+        width: 3,
+        material: Color.CYAN,
+        clampToGround: false,
+        arcType: 0,
+      },
+    });
+
+    const pointEntities = initialCoordinates.map((coord, index) => {
+      return viewer.entities.add({
+        id: `kml-edit-point-${activeMissionId}-${index}`,
+        position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+        point: {
+          pixelSize: 11,
+          color: Color.CYAN,
+          outlineColor: Color.WHITE,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    });
+
+    let draggingPointIndex: number | null = null;
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    const setNavigationEnabled = (enabled: boolean) => {
+      const controller = viewer.scene.screenSpaceCameraController;
+      controller.enableRotate = enabled;
+      controller.enableTranslate = enabled;
+      controller.enableTilt = enabled;
+      controller.enableZoom = enabled;
+      controller.enableLook = enabled;
+    };
+
+    handler.setInputAction((event: { position: Cartesian2 }) => {
+      const picked = viewer.scene.pick(event.position) as { id?: Entity } | undefined;
+      if (!picked?.id || typeof picked.id.id !== 'string') return;
+
+      const match = picked.id.id.match(new RegExp(`^kml-edit-point-${activeMissionId}-(\\d+)$`));
+      if (!match) return;
+
+      draggingPointIndex = Number(match[1]);
+      setNavigationEnabled(false);
+    }, ScreenSpaceEventType.LEFT_DOWN);
+
+    handler.setInputAction((event: { endPosition: Cartesian2 }) => {
+      if (draggingPointIndex === null) return;
+
+      const lonLat = getLonLatFromScreenPosition(viewer, event.endPosition);
+      if (!lonLat) return;
+
+      const currentCoords = editCoordinatesRef.current;
+      if (!currentCoords) return;
+
+      const altitude = Number.isFinite(currentCoords[draggingPointIndex][2])
+        ? currentCoords[draggingPointIndex][2]
+        : editAltitudeRef.current;
+
+      currentCoords[draggingPointIndex] = [lonLat.lon, lonLat.lat, altitude];
+
+      const draggedPoint = pointEntities[draggingPointIndex];
+      if (draggedPoint) {
+        draggedPoint.position = new ConstantPositionProperty(
+          Cartesian3.fromDegrees(lonLat.lon, lonLat.lat, altitude)
+        );
+      }
+
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.MOUSE_MOVE);
+
+    const stopDrag = () => {
+      if (draggingPointIndex !== null) {
+        const coordsToSave = editCoordinatesRef.current;
+        const missionFromStore = useMissionStore
+          .getState()
+          .missions.find((mission) => mission.id === activeMissionId);
+
+        if (coordsToSave && missionFromStore?.aoi && missionFromStore.aoi.type === 'kml') {
+          updateMission(activeMissionId, {
+            aoi: {
+              ...missionFromStore.aoi,
+              coordinates: coordsToSave.map((coord) => [coord[0], coord[1], coord[2]]),
+            },
+          });
+        }
+
+        draggingPointIndex = null;
+        setNavigationEnabled(true);
+      }
+    };
+
+    handler.setInputAction(stopDrag, ScreenSpaceEventType.LEFT_UP);
+
+    return () => {
+      handler.destroy();
+      setNavigationEnabled(true);
+      if (editPolylineIdRef.current) {
+        viewer.entities.removeById(editPolylineIdRef.current);
+        editPolylineIdRef.current = null;
+      }
+      pointEntities.forEach((entity) => viewer.entities.remove(entity));
+      editCoordinatesRef.current = null;
+      editActiveMissionIdRef.current = null;
+    };
+  }, [activeMissionId, kmlEditMode, updateMission]);
 
   // Render imagery layers (RGB/DSM/Cesium Ion)
   useEffect(() => {

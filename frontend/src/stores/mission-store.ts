@@ -64,6 +64,7 @@ export interface CameraTarget {
 interface MissionStore {
   missions: Mission[];
   activeMissionId: string | null;
+  kmlEditMode: boolean;
   layers: Layer[];
   viewMode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW';
   cameraTarget: CameraTarget | null;
@@ -85,11 +86,13 @@ interface MissionStore {
   // View actions
   setViewMode: (mode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW') => void;
   setCameraTarget: (target: CameraTarget | null) => void;
+  setKmlEditMode: (enabled: boolean) => void;
 }
 
 export const useMissionStore = create<MissionStore>((set, get) => ({
   missions: [],
   activeMissionId: null,
+  kmlEditMode: false,
   layers: [
     {
       id: 'basemap',
@@ -217,5 +220,9 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
 
   setCameraTarget: (target) => {
     set({ cameraTarget: target });
+  },
+
+  setKmlEditMode: (enabled) => {
+    set({ kmlEditMode: enabled });
   },
 }));

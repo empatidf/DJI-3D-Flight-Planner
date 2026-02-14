@@ -18,6 +18,8 @@ export const FlightPlanner = () => {
   const missions = useMissionStore((state) => state.missions);
   const updateMission = useMissionStore((state) => state.updateMission);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
+  const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
+  const setKmlEditMode = useMissionStore((state) => state.setKmlEditMode);
 
   const activeMission = missions.find(m => m.id === activeMissionId);
 
@@ -44,6 +46,12 @@ export const FlightPlanner = () => {
       setFlightAngle(activeMission.parameters.flightAngle);
     }
   }, [activeMissionId]);
+
+  useEffect(() => {
+    if (!activeMission?.aoi || activeMission.aoi.type !== 'kml') {
+      setKmlEditMode(false);
+    }
+  }, [activeMission?.id, activeMission?.aoi, setKmlEditMode]);
 
   // Update flight plan calculations when parameters change
   useEffect(() => {
@@ -204,6 +212,32 @@ export const FlightPlanner = () => {
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
+  const handleStartKMLEdit = () => {
+    if (!activeMission?.aoi || activeMission.aoi.type !== 'kml') return;
+    setKmlEditMode(true);
+    setStatusMessage('KML edit mode enabled. Drag points on the map.');
+    setTimeout(() => setStatusMessage(''), 3000);
+  };
+
+  const handleSaveKMLEdit = () => {
+    setKmlEditMode(false);
+    setStatusMessage('KML points saved.');
+    setTimeout(() => setStatusMessage(''), 3000);
+  };
+
+  const handleDeleteKML = () => {
+    if (!activeMissionId || !activeMission?.aoi) return;
+    if (!confirm('Delete imported KML area for this mission?')) return;
+
+    setKmlEditMode(false);
+    updateMission(activeMissionId, {
+      aoi: null,
+      flightLines: [],
+    });
+    setStatusMessage('KML area deleted.');
+    setTimeout(() => setStatusMessage(''), 3000);
+  };
+
   const handleGenerateFlightPlan = async () => {
     if (!activeMissionId || !activeMission?.aoi) {
       setStatusMessage('Please import KML or draw an area first');
@@ -337,6 +371,33 @@ export const FlightPlanner = () => {
             <div className="status-message success">
               ✓ Area loaded: <strong>{activeMission.aoi.name}</strong>
             </div>
+            {activeMission.aoi.type === 'kml' && (
+              <div className="kml-toolbar" aria-label="KML toolbar">
+                <button
+                  className="kml-tool-btn kml-delete"
+                  onClick={handleDeleteKML}
+                  title="Delete KML"
+                >
+                  🗑️
+                </button>
+                <button
+                  className={`kml-tool-btn ${kmlEditMode ? 'active' : ''}`}
+                  onClick={handleStartKMLEdit}
+                  disabled={kmlEditMode}
+                  title="Edit KML"
+                >
+                  ✏️
+                </button>
+                <button
+                  className="kml-tool-btn kml-save"
+                  onClick={handleSaveKMLEdit}
+                  disabled={!kmlEditMode}
+                  title="Save KML"
+                >
+                  💾
+                </button>
+              </div>
+            )}
             <div className="aoi-actions">
               <button className="btn-secondary" onClick={handleImportKML}>
                 📂 Replace with KML
