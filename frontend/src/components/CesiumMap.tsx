@@ -23,6 +23,7 @@ import {
   Cartesian2,
   CallbackProperty,
   ConstantPositionProperty,
+  CallbackPositionProperty,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
@@ -317,19 +318,110 @@ export const CesiumMap = () => {
       },
     });
 
-    const pointEntities = initialCoordinates.map((coord, index) => {
-      return viewer.entities.add({
-        id: `kml-edit-point-${activeMissionId}-${index}`,
-        position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
-        point: {
-          pixelSize: 11,
-          color: Color.CYAN,
-          outlineColor: Color.WHITE,
-          outlineWidth: 2,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
+    let pointEntities: Entity[] = [];
+    let addPointEntities: Entity[] = [];
+    let deletePointEntity: Entity | null = null;
+    let selectedPointIndex: number | null = null;
+
+    const persistCoordinatesToStore = () => {
+      const coordsToSave = editCoordinatesRef.current;
+      const missionFromStore = useMissionStore
+        .getState()
+        .missions.find((mission) => mission.id === activeMissionId);
+
+      if (coordsToSave && missionFromStore?.aoi && missionFromStore.aoi.type === 'kml') {
+        updateMission(activeMissionId, {
+          aoi: {
+            ...missionFromStore.aoi,
+            coordinates: coordsToSave.map((coord) => [coord[0], coord[1], coord[2]]),
+          },
+        });
+      }
+    };
+
+    const removeEntityGroup = (entities: Entity[]) => {
+      entities.forEach((entity) => viewer.entities.remove(entity));
+    };
+
+    const buildMidPointCartesian = (edgeIndex: number) => {
+      const coords = editCoordinatesRef.current;
+      if (!coords || coords.length < 2) return Cartesian3.fromDegrees(0, 0, editAltitudeRef.current);
+
+      const nextIndex = (edgeIndex + 1) % coords.length;
+      const first = coords[edgeIndex];
+      const second = coords[nextIndex];
+      const midpointLon = (first[0] + second[0]) / 2;
+      const midpointLat = (first[1] + second[1]) / 2;
+      const midpointAlt = (first[2] + second[2]) / 2;
+      return Cartesian3.fromDegrees(midpointLon, midpointLat, midpointAlt);
+    };
+
+    const rebuildEditHandles = () => {
+      removeEntityGroup(pointEntities);
+      removeEntityGroup(addPointEntities);
+      pointEntities = [];
+      addPointEntities = [];
+
+      if (deletePointEntity) {
+        viewer.entities.remove(deletePointEntity);
+        deletePointEntity = null;
+      }
+
+      const coords = editCoordinatesRef.current;
+      if (!coords || coords.length === 0) return;
+
+      pointEntities = coords.map((coord, index) => {
+        const isSelected = selectedPointIndex === index;
+        return viewer.entities.add({
+          id: `kml-edit-point-${activeMissionId}-${index}`,
+          position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+          point: {
+            pixelSize: isSelected ? 13 : 11,
+            color: isSelected ? Color.RED : Color.CYAN,
+            outlineColor: Color.WHITE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
       });
-    });
+
+      addPointEntities = coords.map((_, edgeIndex) => {
+        return viewer.entities.add({
+          id: `kml-edit-add-${activeMissionId}-${edgeIndex}`,
+          position: new CallbackPositionProperty(() => buildMidPointCartesian(edgeIndex), false),
+          label: {
+            text: '+',
+            font: 'bold 20px sans-serif',
+            fillColor: Color.RED,
+            outlineColor: Color.BLACK,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+      });
+
+      if (selectedPointIndex !== null && coords.length > 3) {
+        deletePointEntity = viewer.entities.add({
+          id: `kml-edit-delete-${activeMissionId}`,
+          position: new CallbackPositionProperty(() => {
+            const current = editCoordinatesRef.current;
+            if (!current || selectedPointIndex === null || !current[selectedPointIndex]) {
+              return Cartesian3.fromDegrees(0, 0, editAltitudeRef.current);
+            }
+            const selected = current[selectedPointIndex];
+            return Cartesian3.fromDegrees(selected[0], selected[1], selected[2]);
+          }, false),
+          label: {
+            text: '🗑',
+            font: '18px sans-serif',
+            pixelOffset: new Cartesian2(-26, 0),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+      }
+    };
+
+    rebuildEditHandles();
 
     let draggingPointIndex: number | null = null;
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -347,11 +439,52 @@ export const CesiumMap = () => {
       const picked = viewer.scene.pick(event.position) as { id?: Entity } | undefined;
       if (!picked?.id || typeof picked.id.id !== 'string') return;
 
-      const match = picked.id.id.match(new RegExp(`^kml-edit-point-${activeMissionId}-(\\d+)$`));
-      if (!match) return;
+      if (picked.id.id === `kml-edit-delete-${activeMissionId}`) {
+        const coords = editCoordinatesRef.current;
+        if (coords && selectedPointIndex !== null && coords.length > 3) {
+          coords.splice(selectedPointIndex, 1);
+          selectedPointIndex = null;
+          rebuildEditHandles();
+          persistCoordinatesToStore();
+          viewer.scene.requestRender();
+        }
+        return;
+      }
 
-      draggingPointIndex = Number(match[1]);
-      setNavigationEnabled(false);
+      const addMatch = picked.id.id.match(new RegExp(`^kml-edit-add-${activeMissionId}-(\\d+)$`));
+      if (addMatch) {
+        const edgeIndex = Number(addMatch[1]);
+        const coords = editCoordinatesRef.current;
+        if (coords && coords.length >= 2 && edgeIndex >= 0 && edgeIndex < coords.length) {
+          const nextIndex = (edgeIndex + 1) % coords.length;
+          const first = coords[edgeIndex];
+          const second = coords[nextIndex];
+          const midpoint: number[] = [
+            (first[0] + second[0]) / 2,
+            (first[1] + second[1]) / 2,
+            (first[2] + second[2]) / 2,
+          ];
+          coords.splice(nextIndex, 0, midpoint);
+          selectedPointIndex = nextIndex;
+          rebuildEditHandles();
+          persistCoordinatesToStore();
+          viewer.scene.requestRender();
+        }
+        return;
+      }
+
+      const pointMatch = picked.id.id.match(new RegExp(`^kml-edit-point-${activeMissionId}-(\\d+)$`));
+      if (pointMatch) {
+        draggingPointIndex = Number(pointMatch[1]);
+        selectedPointIndex = draggingPointIndex;
+        rebuildEditHandles();
+        setNavigationEnabled(false);
+        return;
+      }
+
+      selectedPointIndex = null;
+      rebuildEditHandles();
+      viewer.scene.requestRender();
     }, ScreenSpaceEventType.LEFT_DOWN);
 
     handler.setInputAction((event: { endPosition: Cartesian2 }) => {
@@ -381,19 +514,7 @@ export const CesiumMap = () => {
 
     const stopDrag = () => {
       if (draggingPointIndex !== null) {
-        const coordsToSave = editCoordinatesRef.current;
-        const missionFromStore = useMissionStore
-          .getState()
-          .missions.find((mission) => mission.id === activeMissionId);
-
-        if (coordsToSave && missionFromStore?.aoi && missionFromStore.aoi.type === 'kml') {
-          updateMission(activeMissionId, {
-            aoi: {
-              ...missionFromStore.aoi,
-              coordinates: coordsToSave.map((coord) => [coord[0], coord[1], coord[2]]),
-            },
-          });
-        }
+        persistCoordinatesToStore();
 
         draggingPointIndex = null;
         setNavigationEnabled(true);
@@ -409,7 +530,11 @@ export const CesiumMap = () => {
         viewer.entities.removeById(editPolylineIdRef.current);
         editPolylineIdRef.current = null;
       }
-      pointEntities.forEach((entity) => viewer.entities.remove(entity));
+      removeEntityGroup(pointEntities);
+      removeEntityGroup(addPointEntities);
+      if (deletePointEntity) {
+        viewer.entities.remove(deletePointEntity);
+      }
       editCoordinatesRef.current = null;
       editActiveMissionIdRef.current = null;
     };
