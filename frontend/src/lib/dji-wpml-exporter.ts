@@ -46,12 +46,23 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
     throw new Error('No valid waypoint coordinates to export');
   }
 
+  const firstWaypointAltitude = allWaypoints[0].alt;
+  const targetFirstAltitude = Number(mission.parameters.altitude);
+  const normalizedFirstAltitude = Number.isFinite(targetFirstAltitude)
+    ? targetFirstAltitude
+    : firstWaypointAltitude;
+
+  const normalizedWaypoints = allWaypoints.map((waypoint) => ({
+    ...waypoint,
+    alt: normalizedFirstAltitude + (waypoint.alt - firstWaypointAltitude),
+  }));
+
   // DJI Pilot 2 expects files inside the wpmz folder in KMZ
-  const waylinesContent = generateWaylinesWPML(mission, allWaypoints);
+  const waylinesContent = generateWaylinesWPML(mission, normalizedWaypoints);
   zip.file('wpmz/waylines.wpml', waylinesContent);
 
   // Create template.kml (for editing)
-  const templateContent = generateTemplateKML(mission, allWaypoints);
+  const templateContent = generateTemplateKML(mission, normalizedWaypoints);
   zip.file('wpmz/template.kml', templateContent);
 
   // Generate KMZ file
