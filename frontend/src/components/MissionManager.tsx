@@ -9,6 +9,20 @@ import { useMissionStore } from '../stores/mission-store';
 import { DRONES } from '../lib/drone-specs';
 import './MissionManager.css';
 
+const VisibilityIcon = ({ visible }: { visible: boolean }) => (
+  <svg
+    className="visibility-icon"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <path d="M12 5C6.5 5 2.1 8.4 1 12c1.1 3.6 5.5 7 11 7s9.9-3.4 11-7c-1.1-3.6-5.5-7-11-7Z" fill="currentColor" />
+    <circle cx="12" cy="12" r="3.8" fill="white" />
+    <circle cx="12" cy="12" r="2" fill="currentColor" />
+    {!visible && <path d="M4 4 20 20" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />}
+  </svg>
+);
+
 const areLayersEquivalent = (a: ReturnType<typeof useMissionStore.getState>['layers'], b: ReturnType<typeof useMissionStore.getState>['layers']) => {
   if (a === b) return true;
   if (a.length !== b.length) return false;
@@ -201,8 +215,9 @@ export const MissionManager = () => {
                 className="btn-visibility"
                 onClick={() => toggleMissionVisibility(mission.id)}
                 title={mission.visible ? 'Hide mission' : 'Show mission'}
+                aria-label={mission.visible ? 'Hide mission' : 'Show mission'}
               >
-                {mission.visible ? '●' : '○'}
+                <VisibilityIcon visible={mission.visible} />
               </button>
 
               {/* Mission Name */}

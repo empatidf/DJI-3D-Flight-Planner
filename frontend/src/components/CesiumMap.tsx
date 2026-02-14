@@ -1959,23 +1959,27 @@ export const CesiumMap = () => {
             (mission.missionType === 'area' && showAreaHeightGuides);
 
           if (shouldShowHeightGuides) {
-            const terrainHeightRaw = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
-            const terrainHeight = typeof terrainHeightRaw === 'number' && Number.isFinite(terrainHeightRaw)
-              ? terrainHeightRaw
-              : 0;
-
             const firstCoord = mission.missionType === 'area' ? firstMissionCoord : safeCoordinates[0];
             const firstAltitude = Number.isFinite(firstCoord?.[2]) ? firstCoord[2] : missionAltitude;
             const pointAltitude = Number.isFinite(coord[2]) ? coord[2] : missionAltitude;
             const djiRelativeHeight = missionAltitude + (pointAltitude - firstAltitude);
+            const getTerrainHeightAtPoint = () => {
+              const terrainHeightRaw = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
+              return typeof terrainHeightRaw === 'number' && Number.isFinite(terrainHeightRaw)
+                ? terrainHeightRaw
+                : pointAltitude;
+            };
 
             viewer.entities.add({
               id: `waypoint-guide-line-${mission.id}-${lineIndex}-${wpIndex}`,
               polyline: {
-                positions: [
-                  Cartesian3.fromDegrees(coord[0], coord[1], pointAltitude),
-                  Cartesian3.fromDegrees(coord[0], coord[1], terrainHeight),
-                ],
+                positions: new CallbackProperty(() => {
+                  const terrainHeight = getTerrainHeightAtPoint();
+                  return [
+                    Cartesian3.fromDegrees(coord[0], coord[1], pointAltitude),
+                    Cartesian3.fromDegrees(coord[0], coord[1], terrainHeight),
+                  ];
+                }, false),
                 width: 2,
                 material: Color.CYAN.withAlpha(0.75),
                 clampToGround: false,
@@ -1985,7 +1989,10 @@ export const CesiumMap = () => {
 
             viewer.entities.add({
               id: `waypoint-guide-label-${mission.id}-${lineIndex}-${wpIndex}`,
-              position: Cartesian3.fromDegrees(coord[0], coord[1], (pointAltitude + terrainHeight) / 2),
+              position: new CallbackPositionProperty(() => {
+                const terrainHeight = getTerrainHeightAtPoint();
+                return Cartesian3.fromDegrees(coord[0], coord[1], (pointAltitude + terrainHeight) / 2);
+              }, false),
               label: {
                 text: `${djiRelativeHeight.toFixed(1)}m`.split('').join('\n'),
                 font: 'bold 11px sans-serif',
