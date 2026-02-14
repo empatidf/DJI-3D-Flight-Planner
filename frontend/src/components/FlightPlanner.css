@@ -122,6 +122,23 @@
   margin: 0;
 }
 
+.range-control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.planner-section input.range-number-input {
+  width: 88px;
+  flex: 0 0 88px;
+}
+
+.planner-section input.range-slider-input {
+  flex: 1;
+  min-width: 120px;
+  padding: 0;
+}
+
 .camera-info {
   padding: 6px;
   background: #f8f9fa;
@@ -373,6 +390,72 @@
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
+}
+
+.waypoint-settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.waypoint-field-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.planner-section label.waypoint-compact-field {
+  width: auto;
+  min-width: 170px;
+  margin-bottom: 0;
+}
+
+.planner-section label.waypoint-compact-field input {
+  width: 150px;
+}
+
+.planner-section label.waypoint-inline-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  width: auto;
+  max-width: 220px;
+  line-height: 1.2;
+}
+
+.planner-section label.waypoint-inline-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+@media (max-width: 1024px) {
+  .waypoint-field-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .planner-section label.waypoint-compact-field input {
+    width: 180px;
+  }
+
+  .planner-section label.waypoint-inline-toggle {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .range-control-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .planner-section input.range-number-input {
+    width: 100%;
+    flex: none;
+  }
 }
 
 /* Scrollbar styling */

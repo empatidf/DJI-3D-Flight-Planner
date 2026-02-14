@@ -153,6 +153,61 @@ export const FlightPlanner = () => {
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
+  const handleAltitudeChange = (newAltitude: number) => {
+    setAltitude(newAltitude);
+
+    if (!activeMissionId) return;
+
+    updateMission(activeMissionId, {
+      parameters: {
+        altitude: newAltitude,
+        speed,
+        forwardOverlap,
+        sideOverlap,
+        flightAngle,
+        gimbalPitch,
+        gimbalYaw,
+        droneYaw,
+        waypointTakePhoto,
+        waypointRecordVideo,
+        waypointHoverEnabled,
+        waypointHoverTime,
+        waypointAutoDroneHeading,
+        waypointAutoGimbalYaw,
+      },
+    });
+
+    if (
+      activeMission?.missionType === 'waypoint' &&
+      activeMission.flightLines?.length > 0 &&
+      activeMission.flightLines[0].coordinates.length > 0
+    ) {
+      const firstLine = activeMission.flightLines[0];
+      const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], newAltitude]);
+      const viewer = getCesiumViewer();
+
+      const applyWaypointAltitude = async () => {
+        const updatedWaypoints = viewer
+          ? await sampleTerrainForWaypoints(viewer, baseWaypoints, newAltitude)
+          : baseWaypoints;
+
+        updateMission(activeMissionId, {
+          flightLines: [
+            {
+              ...firstLine,
+              coordinates: updatedWaypoints,
+            },
+            ...activeMission.flightLines.slice(1),
+          ],
+        });
+      };
+
+      applyWaypointAltitude().catch((error) => {
+        console.error('Failed to update waypoint altitude:', error);
+      });
+    }
+  };
+
   const handleExportToDJI = async () => {
     if (!activeMission) {
       setStatusMessage('Please select a mission first');
@@ -707,80 +762,50 @@ export const FlightPlanner = () => {
 
         <label>
           Altitude (m AGL):
-          <input
-            type="number"
-            value={altitude}
-            onChange={(e) => {
-              const newAltitude = Number(e.target.value);
-              setAltitude(newAltitude);
-              // Update mission immediately for real-time KML overlay height changes
-              if (activeMissionId) {
-                updateMission(activeMissionId, {
-                  parameters: {
-                    altitude: newAltitude,
-                    speed,
-                    forwardOverlap,
-                    sideOverlap,
-                    flightAngle,
-                    gimbalPitch,
-                    gimbalYaw,
-                    droneYaw,
-                    waypointTakePhoto,
-                    waypointRecordVideo,
-                    waypointHoverEnabled,
-                    waypointHoverTime,
-                    waypointAutoDroneHeading,
-                    waypointAutoGimbalYaw,
-                  },
-                });
-
-                if (
-                  activeMission?.missionType === 'waypoint' &&
-                  activeMission.flightLines?.length > 0 &&
-                  activeMission.flightLines[0].coordinates.length > 0
-                ) {
-                  const firstLine = activeMission.flightLines[0];
-                  const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], newAltitude]);
-                  const viewer = getCesiumViewer();
-
-                  const applyWaypointAltitude = async () => {
-                    const updatedWaypoints = viewer
-                      ? await sampleTerrainForWaypoints(viewer, baseWaypoints, newAltitude)
-                      : baseWaypoints;
-
-                    updateMission(activeMissionId, {
-                      flightLines: [
-                        {
-                          ...firstLine,
-                          coordinates: updatedWaypoints,
-                        },
-                        ...activeMission.flightLines.slice(1),
-                      ],
-                    });
-                  };
-
-                  applyWaypointAltitude().catch((error) => {
-                    console.error('Failed to update waypoint altitude:', error);
-                  });
-                }
-              }
-            }}
-            min="10"
-            max={selectedDrone.maxAltitude}
-            step="5"
-          />
+          <div className="range-control-row">
+            <input
+              className="range-number-input"
+              type="number"
+              value={altitude}
+              onChange={(e) => handleAltitudeChange(Number(e.target.value))}
+              min="1"
+              max="200"
+              step="1"
+            />
+            <input
+              className="range-slider-input"
+              type="range"
+              value={altitude}
+              onChange={(e) => handleAltitudeChange(Number(e.target.value))}
+              min="1"
+              max="200"
+              step="1"
+            />
+          </div>
         </label>
 
         <label>
           Flight Speed (m/s):
-          <input
-            type="number"
-            value={speed}
-            onChange={(e) => setSpeed(Number(e.target.value))}
-            min="1"
-            max={selectedDrone.maxSpeed}
-            step="0.5"
-          />
+          <div className="range-control-row">
+            <input
+              className="range-number-input"
+              type="number"
+              value={speed}
+              onChange={(e) => setSpeed(Number(e.target.value))}
+              min="1"
+              max="15"
+              step="0.5"
+            />
+            <input
+              className="range-slider-input"
+              type="range"
+              value={speed}
+              onChange={(e) => setSpeed(Number(e.target.value))}
+              min="1"
+              max="15"
+              step="0.5"
+            />
+          </div>
           {activeMission?.missionType === 'area' && flightPlan?.hasSpeedWarning && (
             <span className="warning">⚠️ Speed may cause blur</span>
           )}
@@ -851,30 +876,32 @@ export const FlightPlanner = () => {
             {activeMission?.missionType !== 'waypoint' ? (
               <div className="status-message warning">Enable by importing waypoint KML</div>
             ) : (
-              <>
-                <label>
-                  Drone Yaw (°):
-                  <input
-                    type="number"
-                    value={droneYaw}
-                    onChange={(e) => setDroneYaw(Number(e.target.value))}
-                    min="-180"
-                    max="180"
-                    step="1"
-                    disabled={waypointAutoDroneHeading}
-                  />
-                </label>
+              <div className="waypoint-settings-layout">
+                <div className="waypoint-field-row">
+                  <label className="waypoint-compact-field">
+                    Drone Yaw (°):
+                    <input
+                      type="number"
+                      value={droneYaw}
+                      onChange={(e) => setDroneYaw(Number(e.target.value))}
+                      min="-180"
+                      max="180"
+                      step="1"
+                      disabled={waypointAutoDroneHeading}
+                    />
+                  </label>
 
-                <label className="inline-toggle">
-                  <input
-                    type="checkbox"
-                    checked={waypointAutoDroneHeading}
-                    onChange={(e) => setWaypointAutoDroneHeading(e.target.checked)}
-                  />
-                  Auto Drone Heading (Follow Wayline)
-                </label>
+                  <label className="waypoint-inline-toggle">
+                    <input
+                      type="checkbox"
+                      checked={waypointAutoDroneHeading}
+                      onChange={(e) => setWaypointAutoDroneHeading(e.target.checked)}
+                    />
+                    Auto Drone Heading (Follow Wayline)
+                  </label>
+                </div>
 
-                <label>
+                <label className="waypoint-compact-field">
                   Gimbal Pitch (°):
                   <input
                     type="number"
@@ -886,27 +913,29 @@ export const FlightPlanner = () => {
                   />
                 </label>
 
-                <label>
-                  Gimbal Yaw (°):
-                  <input
-                    type="number"
-                    value={gimbalYaw}
-                    onChange={(e) => setGimbalYaw(Number(e.target.value))}
-                    min="-180"
-                    max="180"
-                    step="1"
-                    disabled={waypointAutoGimbalYaw}
-                  />
-                </label>
+                <div className="waypoint-field-row">
+                  <label className="waypoint-compact-field">
+                    Gimbal Yaw (°):
+                    <input
+                      type="number"
+                      value={gimbalYaw}
+                      onChange={(e) => setGimbalYaw(Number(e.target.value))}
+                      min="-180"
+                      max="180"
+                      step="1"
+                      disabled={waypointAutoGimbalYaw}
+                    />
+                  </label>
 
-                <label className="inline-toggle">
-                  <input
-                    type="checkbox"
-                    checked={waypointAutoGimbalYaw}
-                    onChange={(e) => setWaypointAutoGimbalYaw(e.target.checked)}
-                  />
-                  Auto Gimbal Yaw (Default)
-                </label>
+                  <label className="waypoint-inline-toggle">
+                    <input
+                      type="checkbox"
+                      checked={waypointAutoGimbalYaw}
+                      onChange={(e) => setWaypointAutoGimbalYaw(e.target.checked)}
+                    />
+                    Auto Gimbal Yaw (Default)
+                  </label>
+                </div>
 
                 <label>
                   <span>Take Photo at Waypoints</span>
@@ -954,7 +983,7 @@ export const FlightPlanner = () => {
                     />
                   </label>
                 )}
-              </>
+              </div>
             )}
           </>
         )}

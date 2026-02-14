@@ -41,6 +41,8 @@ export const CesiumMap = () => {
   const editPolylineIdRef = useRef<string | null>(null);
   const drawPointsRef = useRef<number[][]>([]);
   const drawHoverRef = useRef<number[] | null>(null);
+  const missionAoiRenderVersionRef = useRef<number>(0);
+  const missionAoiTerrainCacheRef = useRef<Record<string, { coordKey: string; baseHeights: number[] }>>({});
   const viewMode = useMissionStore((state) => state.viewMode);
   const cameraTarget = useMissionStore((state) => state.cameraTarget);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
@@ -228,18 +230,11 @@ export const CesiumMap = () => {
     if (!viewerRef.current) return;
 
     const viewer = viewerRef.current;
-    
-    // Remove existing mission entities
-    const entitiesToRemove: Entity[] = [];
-    viewer.entities.values.forEach((entity) => {
-      if (entity.id.startsWith('mission-aoi-')) {
-        entitiesToRemove.push(entity);
-      }
-    });
-    entitiesToRemove.forEach((entity) => viewer.entities.remove(entity));
+    const renderVersion = ++missionAoiRenderVersionRef.current;
+    const activeAoiEntityIds = new Set<string>();
 
-    // Add polygons for visible missions with AOI - async for terrain sampling
-    missions.forEach(async (mission) => {
+    // Add polygons for visible missions with AOI
+    missions.forEach((mission) => {
       if (!mission.visible || !mission.aoi) return;
 
       const coordinates = mission.aoi.coordinates;
@@ -252,34 +247,100 @@ export const CesiumMap = () => {
       // Live edit overlay handles active mission in edit mode
       if (isActiveKmlEditMission) return;
 
+      const entityId = `mission-aoi-${mission.id}`;
+      activeAoiEntityIds.add(entityId);
+
       // Use mission altitude for polygon elevation (AGL)
       const missionAltitude = mission.parameters.altitude;
+      const coordKey = coordinates.map((coord) => `${coord[0].toFixed(8)},${coord[1].toFixed(8)}`).join('|');
+      const cachedTerrain = missionAoiTerrainCacheRef.current[mission.id];
+      const hasValidCache =
+        !!cachedTerrain &&
+        cachedTerrain.coordKey === coordKey &&
+        cachedTerrain.baseHeights.length === coordinates.length;
 
-      // Sample terrain and create positions with terrain-following
-      const waypointsWithAltitude = coordinates.map(coord => [coord[0], coord[1], missionAltitude]);
-      const terrainAdjustedPoints = await sampleTerrainForWaypoints(viewer, waypointsWithAltitude, missionAltitude);
-      
-      // Convert coordinates to Cartesian3 positions with terrain-following altitudes
-      const positions = terrainAdjustedPoints.map(coord =>
-        Cartesian3.fromDegrees(coord[0], coord[1], coord[2])
-      );
-
-      // Add polygon entity at terrain-following altitude - using polyline for better visibility
-      // Close the polygon by adding first point at end
-      const closedPositions = [...positions, positions[0]];
-      
-      viewer.entities.add({
-        id: `mission-aoi-${mission.id}`,
-        name: mission.aoi.name,
-        polyline: {
-          positions: closedPositions,
-          width: 3,
-          material: Color.CYAN,
-          clampToGround: false,
-          arcType: 0, // NONE - straight lines
-        },
+      // Draw immediately with fallback altitude to keep interaction responsive
+      const fallbackPositions = coordinates.map((coord) => {
+        const altitude = missionAltitude;
+        return Cartesian3.fromDegrees(coord[0], coord[1], altitude);
       });
 
+      const immediatePositions = hasValidCache
+        ? coordinates.map((coord, index) =>
+            Cartesian3.fromDegrees(coord[0], coord[1], cachedTerrain.baseHeights[index] + missionAltitude)
+          )
+        : fallbackPositions;
+
+      const closedFallbackPositions = [...immediatePositions, immediatePositions[0]];
+
+      const existingEntity = viewer.entities.getById(entityId);
+      if (existingEntity?.polyline) {
+        existingEntity.name = mission.aoi.name;
+        existingEntity.polyline.positions = new CallbackProperty(() => closedFallbackPositions, false);
+      } else {
+        viewer.entities.add({
+          id: entityId,
+          name: mission.aoi.name,
+          polyline: {
+            positions: closedFallbackPositions,
+            width: 3,
+            material: Color.CYAN,
+            clampToGround: false,
+            arcType: 0,
+          },
+        });
+      }
+
+      viewer.scene.requestRender();
+
+      // Refine with terrain-following positions asynchronously
+      const updateTerrainAdjustedBorder = async () => {
+        const waypointsWithAltitude = coordinates.map((coord) => [coord[0], coord[1], missionAltitude]);
+        const terrainAdjustedPoints = await sampleTerrainForWaypoints(viewer, waypointsWithAltitude, missionAltitude);
+
+        if (missionAoiRenderVersionRef.current !== renderVersion) return;
+
+        const entity = viewer.entities.getById(entityId);
+        if (!entity?.polyline) return;
+
+        const positions = terrainAdjustedPoints.map((coord) =>
+          Cartesian3.fromDegrees(coord[0], coord[1], coord[2])
+        );
+
+        missionAoiTerrainCacheRef.current[mission.id] = {
+          coordKey,
+          baseHeights: terrainAdjustedPoints.map((coord) => coord[2] - missionAltitude),
+        };
+
+        const refinedPositions = [...positions, positions[0]];
+        entity.polyline.positions = new CallbackProperty(() => refinedPositions, false);
+        viewer.scene.requestRender();
+      };
+
+      updateTerrainAdjustedBorder().catch((error) => {
+        console.error(`Failed to terrain-adjust AOI border for mission ${mission.id}:`, error);
+      });
+
+    });
+
+    // Remove stale AOI entities only (keeps active borders stable during slider drag)
+    const staleEntities: Entity[] = [];
+    viewer.entities.values.forEach((entity) => {
+      if (entity.id.startsWith('mission-aoi-') && !activeAoiEntityIds.has(entity.id)) {
+        staleEntities.push(entity);
+      }
+    });
+    staleEntities.forEach((entity) => viewer.entities.remove(entity));
+
+    const validMissionIds = new Set(
+      missions
+        .filter((mission) => mission.visible && !!mission.aoi && !(kmlEditMode && mission.id === activeMissionId))
+        .map((mission) => mission.id)
+    );
+    Object.keys(missionAoiTerrainCacheRef.current).forEach((missionId) => {
+      if (!validMissionIds.has(missionId)) {
+        delete missionAoiTerrainCacheRef.current[missionId];
+      }
     });
     
     // Dependencies include missions array - any change triggers immediate re-render

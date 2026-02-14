@@ -15,6 +15,26 @@ interface WaypointData {
   alt: number;
 }
 
+const parseWpmlFloat = (value: unknown, fallback: number): number => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().replace(',', '.');
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  return fallback;
+};
+
+const formatWpmlFloat = (value: unknown, fallback: number, maxDecimals = 2): string => {
+  const parsed = parseWpmlFloat(value, fallback);
+  const fixed = parsed.toFixed(maxDecimals);
+  return fixed.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '');
+};
+
 /**
  * Export mission to DJI WPML KMZ format
  */
@@ -79,6 +99,7 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
  */
 const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
+  const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
   const droneInfo = resolveDroneInfo(drone.name);
   const payloadInfo = resolvePayloadInfo(camera.name, camera.id, droneInfo.droneEnumValue);
 
@@ -100,7 +121,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
     <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
-    <wpml:globalTransitionalSpeed>${parameters.speed}</wpml:globalTransitionalSpeed>
+    <wpml:globalTransitionalSpeed>${speedValue}</wpml:globalTransitionalSpeed>
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
@@ -113,7 +134,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
     <wpml:templateId>0</wpml:templateId>
     <wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>
     <wpml:waylineId>0</wpml:waylineId>
-    <wpml:autoFlightSpeed>${parameters.speed}</wpml:autoFlightSpeed>
+    <wpml:autoFlightSpeed>${speedValue}</wpml:autoFlightSpeed>
 `;
 
   // Add waypoints
@@ -133,6 +154,8 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
  */
 const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
+  const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
+  const altitudeValue = formatWpmlFloat(parameters.altitude, 100, 2);
   const timestamp = Date.now();
 
   const droneInfo = resolveDroneInfo(drone.name);
@@ -162,7 +185,7 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
     <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
-    <wpml:globalTransitionalSpeed>${parameters.speed}</wpml:globalTransitionalSpeed>
+    <wpml:globalTransitionalSpeed>${speedValue}</wpml:globalTransitionalSpeed>
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
@@ -179,8 +202,8 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
       <wpml:coordinateMode>WGS84</wpml:coordinateMode>
       <wpml:heightMode>relativeToStartPoint</wpml:heightMode>
     </wpml:waylineCoordinateSysParam>
-    <wpml:autoFlightSpeed>${parameters.speed}</wpml:autoFlightSpeed>
-    <wpml:globalHeight>${parameters.altitude}</wpml:globalHeight>
+    <wpml:autoFlightSpeed>${speedValue}</wpml:autoFlightSpeed>
+    <wpml:globalHeight>${altitudeValue}</wpml:globalHeight>
     <wpml:caliFlightEnable>0</wpml:caliFlightEnable>
     <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>
     <wpml:globalWaypointHeadingParam>
@@ -220,6 +243,7 @@ const generateWaypointXML = (
   const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
   const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
   const useAutoGimbalYaw = parameters.waypointAutoGimbalYaw ?? true;
+  const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
 
   const actions: string[] = [];
   let actionId = 0;
@@ -290,7 +314,7 @@ const generateWaypointXML = (
       </Point>
       <wpml:index>${index}</wpml:index>
       <wpml:executeHeight>${waypoint.alt.toFixed(2)}</wpml:executeHeight>
-      <wpml:waypointSpeed>${parameters.speed}</wpml:waypointSpeed>
+      <wpml:waypointSpeed>${speedValue}</wpml:waypointSpeed>
       <wpml:waypointHeadingParam>
         <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
         <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
