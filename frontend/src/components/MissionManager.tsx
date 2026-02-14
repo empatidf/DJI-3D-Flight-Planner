@@ -31,6 +31,7 @@ export const MissionManager = () => {
 
     const missionId = addMission({
       name: newMissionName,
+      missionType: 'area',
       drone: defaultDrone,
       camera: defaultCamera,
       aoi: null,
@@ -41,6 +42,14 @@ export const MissionManager = () => {
         sideOverlap: 70,
         flightAngle: 0,
         gimbalPitch: -90,
+        gimbalYaw: 0,
+        droneYaw: 0,
+        waypointTakePhoto: true,
+        waypointRecordVideo: false,
+        waypointHoverEnabled: false,
+        waypointHoverTime: 2,
+        waypointAutoDroneHeading: true,
+        waypointAutoGimbalYaw: true,
       },
       flightLines: [],
       visible: true,

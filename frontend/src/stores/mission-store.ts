@@ -13,6 +13,14 @@ export interface FlightParameters {
   sideOverlap: number; // percentage
   flightAngle: number; // degrees
   gimbalPitch: number; // degrees (-90 = nadir)
+  gimbalYaw: number; // degrees
+  droneYaw: number; // degrees
+  waypointTakePhoto: boolean;
+  waypointRecordVideo: boolean;
+  waypointHoverEnabled: boolean;
+  waypointHoverTime: number; // seconds
+  waypointAutoDroneHeading: boolean;
+  waypointAutoGimbalYaw: boolean;
 }
 
 export interface AreaOfInterest {
@@ -30,6 +38,7 @@ export interface FlightLine {
 export interface Mission {
   id: string;
   name: string;
+  missionType: 'area' | 'waypoint';
   drone: DroneSpec;
   camera: CameraSpec;
   aoi: AreaOfInterest | null;
@@ -65,6 +74,7 @@ interface MissionStore {
   missions: Mission[];
   activeMissionId: string | null;
   kmlEditMode: boolean;
+  drawAoiMode: boolean;
   layers: Layer[];
   viewMode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW';
   cameraTarget: CameraTarget | null;
@@ -87,12 +97,14 @@ interface MissionStore {
   setViewMode: (mode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW') => void;
   setCameraTarget: (target: CameraTarget | null) => void;
   setKmlEditMode: (enabled: boolean) => void;
+  setDrawAoiMode: (enabled: boolean) => void;
 }
 
 export const useMissionStore = create<MissionStore>((set, get) => ({
   missions: [],
   activeMissionId: null,
   kmlEditMode: false,
+  drawAoiMode: false,
   layers: [
     {
       id: 'basemap',
@@ -224,5 +236,9 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
 
   setKmlEditMode: (enabled) => {
     set({ kmlEditMode: enabled });
+  },
+
+  setDrawAoiMode: (enabled) => {
+    set({ drawAoiMode: enabled });
   },
 }));

@@ -68,6 +68,14 @@
   letter-spacing: 0.5px;
 }
 
+.section-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
 .planner-section label {
   display: flex;
   flex-direction: column;
@@ -76,6 +84,12 @@
   font-size: 12px;
   font-weight: 500;
   color: #495057;
+}
+
+.planner-section label.inline-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
 }
 
 .planner-section input,

@@ -39,29 +39,38 @@ export const CesiumMap = () => {
   const editAltitudeRef = useRef<number>(100);
   const editActiveMissionIdRef = useRef<string | null>(null);
   const editPolylineIdRef = useRef<string | null>(null);
+  const drawPointsRef = useRef<number[][]>([]);
+  const drawHoverRef = useRef<number[] | null>(null);
   const viewMode = useMissionStore((state) => state.viewMode);
   const cameraTarget = useMissionStore((state) => state.cameraTarget);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
   const missions = useMissionStore((state) => state.missions);
   const activeMissionId = useMissionStore((state) => state.activeMissionId);
   const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
+  const drawAoiMode = useMissionStore((state) => state.drawAoiMode);
   const updateMission = useMissionStore((state) => state.updateMission);
+  const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
   const layers = useMissionStore((state) => state.layers);
 
   const getLonLatFromScreenPosition = (viewer: Viewer, position: Cartesian2) => {
     let cartesian: Cartesian3 | undefined;
 
-    const ray = viewer.camera.getPickRay(position);
-    if (ray) {
-      cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+    if (viewer.scene.pickPositionSupported) {
+      const precise = viewer.scene.pickPosition(position);
+      if (precise) {
+        cartesian = precise;
+      }
+    }
+
+    if (!cartesian) {
+      const ray = viewer.camera.getPickRay(position);
+      if (ray) {
+        cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+      }
     }
 
     if (!cartesian) {
       cartesian = viewer.camera.pickEllipsoid(position) ?? undefined;
-    }
-
-    if (!cartesian && viewer.scene.pickPositionSupported) {
-      cartesian = viewer.scene.pickPosition(position);
     }
 
     if (!cartesian) return null;
@@ -235,8 +244,7 @@ export const CesiumMap = () => {
 
       const isActiveKmlEditMission =
         kmlEditMode &&
-        mission.id === activeMissionId &&
-        mission.aoi.type === 'kml';
+        mission.id === activeMissionId;
 
       // Live edit overlay handles active mission in edit mode
       if (isActiveKmlEditMission) return;
@@ -274,7 +282,7 @@ export const CesiumMap = () => {
     // Dependencies include missions array - any change triggers immediate re-render
   }, [missions, activeMissionId, kmlEditMode]);
 
-  // KML point drag editing for active mission
+  // AOI point drag editing for active mission
   useEffect(() => {
     if (!viewerRef.current || !activeMissionId || !kmlEditMode) return;
 
@@ -283,7 +291,7 @@ export const CesiumMap = () => {
       .getState()
       .missions.find((mission) => mission.id === activeMissionId);
 
-    if (!activeMission?.aoi || activeMission.aoi.type !== 'kml') return;
+    if (!activeMission?.aoi) return;
 
     const missionAltitude = activeMission.parameters.altitude;
     const initialCoordinates = activeMission.aoi.coordinates.map((coord) => {
@@ -329,7 +337,7 @@ export const CesiumMap = () => {
         .getState()
         .missions.find((mission) => mission.id === activeMissionId);
 
-      if (coordsToSave && missionFromStore?.aoi && missionFromStore.aoi.type === 'kml') {
+      if (coordsToSave && missionFromStore?.aoi) {
         updateMission(activeMissionId, {
           aoi: {
             ...missionFromStore.aoi,
@@ -540,6 +548,105 @@ export const CesiumMap = () => {
     };
   }, [activeMissionId, kmlEditMode, updateMission]);
 
+  // AOI draw mode: click points, live preview line, right-click to finish polygon
+  useEffect(() => {
+    if (!viewerRef.current || !activeMissionId || !drawAoiMode) return;
+
+    const viewer = viewerRef.current;
+    const activeMission = useMissionStore
+      .getState()
+      .missions.find((mission) => mission.id === activeMissionId);
+
+    if (!activeMission) return;
+
+    const drawAltitude = 0;
+    drawPointsRef.current = [];
+    drawHoverRef.current = null;
+
+    const drawLineEntity = viewer.entities.add({
+      id: `draw-aoi-line-${activeMissionId}`,
+      polyline: {
+        positions: new CallbackProperty(() => {
+          const points = drawPointsRef.current;
+          const hover = drawHoverRef.current;
+          const path = hover ? [...points, hover] : points;
+          return path.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1], coord[2]));
+        }, false),
+        width: 3,
+        material: Color.CYAN,
+        clampToGround: false,
+        arcType: 0,
+      },
+    });
+
+    const drawPointEntities: Entity[] = [];
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    const addDrawPointEntity = (coord: number[], index: number) => {
+      const entity = viewer.entities.add({
+        id: `draw-aoi-point-${activeMissionId}-${index}`,
+        position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+        point: {
+          pixelSize: 10,
+          color: Color.YELLOW,
+          outlineColor: Color.WHITE,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+      drawPointEntities.push(entity);
+    };
+
+    handler.setInputAction((event: { endPosition: Cartesian2 }) => {
+      const lonLat = getLonLatFromScreenPosition(viewer, event.endPosition);
+      if (!lonLat) return;
+
+      drawHoverRef.current = [lonLat.lon, lonLat.lat, drawAltitude];
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.MOUSE_MOVE);
+
+    handler.setInputAction((event: { position: Cartesian2 }) => {
+      const picked = viewer.scene.pick(event.position) as { id?: Entity } | undefined;
+      if (picked?.id && typeof picked.id.id === 'string' && picked.id.id.startsWith(`draw-aoi-point-${activeMissionId}-`)) {
+        return;
+      }
+
+      const lonLat = getLonLatFromScreenPosition(viewer, event.position);
+      if (!lonLat) return;
+
+      const newPoint: number[] = [lonLat.lon, lonLat.lat, drawAltitude];
+      drawPointsRef.current = [...drawPointsRef.current, newPoint];
+      addDrawPointEntity(newPoint, drawPointsRef.current.length - 1);
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
+    handler.setInputAction(() => {
+      const points = drawPointsRef.current;
+      if (points.length < 3) return;
+
+      const polygonCoords = points.map((coord) => [coord[0], coord[1], coord[2]]);
+      updateMission(activeMissionId, {
+        aoi: {
+          type: 'polygon',
+          coordinates: polygonCoords,
+          name: `Drawn Area ${new Date().toLocaleTimeString()}`,
+        },
+        flightLines: [],
+      });
+
+      setDrawAoiMode(false);
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.RIGHT_CLICK);
+
+    return () => {
+      handler.destroy();
+      viewer.entities.remove(drawLineEntity);
+      drawPointEntities.forEach((entity) => viewer.entities.remove(entity));
+      drawPointsRef.current = [];
+      drawHoverRef.current = null;
+    };
+  }, [activeMissionId, drawAoiMode, setDrawAoiMode, updateMission]);
+
   // Render imagery layers (RGB/DSM/Cesium Ion)
   useEffect(() => {
     if (!viewerRef.current) return;
@@ -617,7 +724,12 @@ export const CesiumMap = () => {
     // Remove existing flight line entities
     const entitiesToRemove: Entity[] = [];
     viewer.entities.values.forEach((entity) => {
-      if (entity.id.startsWith('flight-line-') || entity.id.startsWith('waypoint-')) {
+      if (typeof entity.id !== 'string') return;
+      if (
+        entity.id.startsWith('flight-line-') ||
+        entity.id.startsWith('flight-connector-') ||
+        entity.id.startsWith('waypoint-')
+      ) {
         entitiesToRemove.push(entity);
       }
     });
@@ -648,52 +760,143 @@ export const CesiumMap = () => {
       
       const missionAltitude = mission.parameters.altitude;
 
-      mission.flightLines.forEach((line, lineIndex) => {
-        if (line.coordinates.length < 2) {
+      const isValidCoord = (coord: number[] | undefined): coord is number[] => {
+        return !!coord && Number.isFinite(coord[0]) && Number.isFinite(coord[1]);
+      };
+
+      const drawableLines = mission.flightLines
+        .map((line, lineIndex) => ({
+          line,
+          lineIndex,
+          safeCoordinates: line.coordinates.filter(isValidCoord),
+        }))
+        .filter(({ safeCoordinates }) => safeCoordinates.length > 0);
+
+      if (drawableLines.length === 0) {
+        console.log(`  Skipping ${mission.name} - no drawable coordinates`);
+        return;
+      }
+
+      const firstLineRef = drawableLines[0];
+      const lastLineRef = drawableLines[drawableLines.length - 1];
+      const firstWaypointRef = {
+        lineIndex: firstLineRef.lineIndex,
+        wpIndex: 0,
+      };
+      const lastWaypointRef = {
+        lineIndex: lastLineRef.lineIndex,
+        wpIndex: lastLineRef.safeCoordinates.length - 1,
+      };
+
+      drawableLines.forEach(({ line, lineIndex, safeCoordinates }, drawableIndex) => {
+        if (safeCoordinates.length < 2) {
           console.log(`  Skipping line ${lineIndex} - insufficient coordinates`);
-          return;
+        } else {
+          console.log(`  Line ${lineIndex}: ${safeCoordinates.length} waypoints, first coord:`, safeCoordinates[0]);
+
+          // Create polyline for flight path
+          const positions = safeCoordinates.map(coord =>
+            Cartesian3.fromDegrees(
+              coord[0],
+              coord[1],
+              Number.isFinite(coord[2]) ? coord[2] : missionAltitude
+            )
+          );
+          
+          console.log(`  Creating polyline with ${positions.length} positions`);
+
+          const polylineEntity = viewer.entities.add({
+            id: `flight-line-${mission.id}-${lineIndex}`,
+            name: `Flight Line ${lineIndex + 1}`,
+            polyline: {
+              positions: positions,
+              width: 4,
+              material: Color.YELLOW,
+              clampToGround: false,
+              arcType: 0, // NONE - straight lines
+            },
+          });
+          
+          console.log(`  ✓ Created polyline entity: ${polylineEntity.id}`);
+          totalLinesRendered++;
         }
 
-        console.log(`  Line ${lineIndex}: ${line.coordinates.length} waypoints, first coord:`, line.coordinates[0]);
-
-        // Create polyline for flight path
-        const positions = line.coordinates.map(coord =>
-          Cartesian3.fromDegrees(coord[0], coord[1], coord[2] || missionAltitude)
-        );
-        
-        console.log(`  Creating polyline with ${positions.length} positions`);
-
-        const polylineEntity = viewer.entities.add({
-          id: `flight-line-${mission.id}-${lineIndex}`,
-          name: `Flight Line ${lineIndex + 1}`,
-          polyline: {
-            positions: positions,
-            width: 4,
-            material: Color.YELLOW,
-            clampToGround: false,
-            arcType: 0, // NONE - straight lines
-          },
-        });
-        
-        console.log(`  ✓ Created polyline entity: ${polylineEntity.id}`);
-        totalLinesRendered++;
+        // Always connect end of current line to start of next line to show direction continuity
+        if (drawableIndex < drawableLines.length - 1) {
+          const currentLast = safeCoordinates[safeCoordinates.length - 1];
+          const nextFirst = drawableLines[drawableIndex + 1].safeCoordinates[0];
+          if (currentLast && nextFirst) {
+            viewer.entities.add({
+              id: `flight-connector-${mission.id}-${drawableIndex}`,
+              name: `Flight Connector ${drawableIndex + 1}`,
+              polyline: {
+                positions: [
+                  Cartesian3.fromDegrees(
+                    currentLast[0],
+                    currentLast[1],
+                    Number.isFinite(currentLast[2]) ? currentLast[2] : missionAltitude
+                  ),
+                  Cartesian3.fromDegrees(
+                    nextFirst[0],
+                    nextFirst[1],
+                    Number.isFinite(nextFirst[2]) ? nextFirst[2] : missionAltitude
+                  ),
+                ],
+                width: 3,
+                material: Color.YELLOW.withAlpha(0.9),
+                clampToGround: false,
+                arcType: 0,
+              },
+            });
+          }
+        }
 
         // Add waypoint markers
-        line.coordinates.forEach((coord, wpIndex) => {
+        safeCoordinates.forEach((coord, wpIndex) => {
           const isPhotoPoint = line.photoPoints?.some(
             pp => pp[0] === coord[0] && pp[1] === coord[1]
           );
+          const isStartPoint =
+            lineIndex === firstWaypointRef.lineIndex &&
+            wpIndex === firstWaypointRef.wpIndex;
+          const isEndPoint =
+            lineIndex === lastWaypointRef.lineIndex &&
+            wpIndex === lastWaypointRef.wpIndex;
+
+          const pointSize = isStartPoint || isEndPoint ? 13 : isPhotoPoint ? 10 : 6;
+          const pointColor = isStartPoint
+            ? Color.LIME
+            : isEndPoint
+              ? Color.YELLOW
+              : isPhotoPoint
+                ? Color.RED
+                : Color.YELLOW;
 
           viewer.entities.add({
             id: `waypoint-${mission.id}-${lineIndex}-${wpIndex}`,
-            position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2] || missionAltitude),
+            position: Cartesian3.fromDegrees(
+              coord[0],
+              coord[1],
+              Number.isFinite(coord[2]) ? coord[2] : missionAltitude
+            ),
             point: {
-              pixelSize: isPhotoPoint ? 10 : 6,
-              color: isPhotoPoint ? Color.RED : Color.YELLOW,
+              pixelSize: pointSize,
+              color: pointColor,
               outlineColor: Color.WHITE,
               outlineWidth: 2,
               disableDepthTestDistance: Number.POSITIVE_INFINITY, // Always visible
             },
+            label: isStartPoint
+              ? {
+                  text: 'S',
+                  font: 'bold 16px sans-serif',
+                  fillColor: Color.WHITE,
+                  outlineColor: Color.BLACK,
+                  outlineWidth: 2,
+                  pixelOffset: new Cartesian2(14, 0),
+                  disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                }
+              : undefined,
           });
         });
       });

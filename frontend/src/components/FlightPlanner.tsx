@@ -7,7 +7,7 @@ import { useState, useEffect } from 'react';
 import { DRONES, type DroneSpec, type CameraSpec } from '../lib/drone-specs';
 import { calculateFlightPlan } from '../lib/flight-calculations';
 import { useMissionStore } from '../stores/mission-store';
-import { importKMLFile } from '../lib/kml-parser';
+import { importKMLFile, importWaypointKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
 import { getCesiumViewer, sampleTerrainForWaypoints } from '../lib/terrain-sampler';
 import { exportToDJI, downloadKMZ } from '../lib/dji-wpml-exporter';
@@ -20,6 +20,8 @@ export const FlightPlanner = () => {
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
   const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
   const setKmlEditMode = useMissionStore((state) => state.setKmlEditMode);
+  const drawAoiMode = useMissionStore((state) => state.drawAoiMode);
+  const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
 
   const activeMission = missions.find(m => m.id === activeMissionId);
 
@@ -30,7 +32,20 @@ export const FlightPlanner = () => {
   const [forwardOverlap, setForwardOverlap] = useState<number>(80);
   const [sideOverlap, setSideOverlap] = useState<number>(70);
   const [flightAngle, setFlightAngle] = useState<number>(0);
+  const [gimbalPitch, setGimbalPitch] = useState<number>(-90);
+  const [gimbalYaw, setGimbalYaw] = useState<number>(0);
+  const [droneYaw, setDroneYaw] = useState<number>(0);
+  const [waypointTakePhoto, setWaypointTakePhoto] = useState<boolean>(true);
+  const [waypointRecordVideo, setWaypointRecordVideo] = useState<boolean>(false);
+  const [waypointHoverEnabled, setWaypointHoverEnabled] = useState<boolean>(false);
+  const [waypointHoverTime, setWaypointHoverTime] = useState<number>(2);
+  const [waypointAutoDroneHeading, setWaypointAutoDroneHeading] = useState<boolean>(true);
+  const [waypointAutoGimbalYaw, setWaypointAutoGimbalYaw] = useState<boolean>(true);
   const [statusMessage, setStatusMessage] = useState<string>('');
+
+  const [showDroneConfig, setShowDroneConfig] = useState<boolean>(true);
+  const [showPhotogrammetry, setShowPhotogrammetry] = useState<boolean>(true);
+  const [showWaypointSettings, setShowWaypointSettings] = useState<boolean>(true);
 
   const [flightPlan, setFlightPlan] = useState<any>(null);
 
@@ -44,11 +59,20 @@ export const FlightPlanner = () => {
       setForwardOverlap(activeMission.parameters.forwardOverlap);
       setSideOverlap(activeMission.parameters.sideOverlap);
       setFlightAngle(activeMission.parameters.flightAngle);
+      setGimbalPitch(activeMission.parameters.gimbalPitch);
+      setGimbalYaw(activeMission.parameters.gimbalYaw ?? 0);
+      setDroneYaw(activeMission.parameters.droneYaw ?? 0);
+      setWaypointTakePhoto(activeMission.parameters.waypointTakePhoto ?? true);
+      setWaypointRecordVideo(activeMission.parameters.waypointRecordVideo ?? false);
+      setWaypointHoverEnabled(activeMission.parameters.waypointHoverEnabled ?? false);
+      setWaypointHoverTime(activeMission.parameters.waypointHoverTime ?? 2);
+      setWaypointAutoDroneHeading(activeMission.parameters.waypointAutoDroneHeading ?? true);
+      setWaypointAutoGimbalYaw(activeMission.parameters.waypointAutoGimbalYaw ?? true);
     }
   }, [activeMissionId]);
 
   useEffect(() => {
-    if (!activeMission?.aoi || activeMission.aoi.type !== 'kml') {
+    if (!activeMission?.aoi) {
       setKmlEditMode(false);
     }
   }, [activeMission?.id, activeMission?.aoi, setKmlEditMode]);
@@ -102,7 +126,15 @@ export const FlightPlanner = () => {
         forwardOverlap,
         sideOverlap,
         flightAngle,
-        gimbalPitch: -90,
+        gimbalPitch,
+        gimbalYaw,
+        droneYaw,
+        waypointTakePhoto,
+        waypointRecordVideo,
+        waypointHoverEnabled,
+        waypointHoverTime,
+        waypointAutoDroneHeading,
+        waypointAutoGimbalYaw,
       },
     });
     
@@ -161,11 +193,13 @@ export const FlightPlanner = () => {
         }
 
         updateMission(activeMissionId, {
+          missionType: 'area',
           aoi: {
             type: 'kml',
             coordinates: firstPolygon.coordinates,
             name: firstPolygon.name,
           },
+          flightLines: [],
         });
 
         // Calculate center and bounding box for camera positioning
@@ -207,15 +241,97 @@ export const FlightPlanner = () => {
     }
   };
 
+  const handleImportWaypointKML = async () => {
+    if (!activeMissionId) {
+      setStatusMessage('Please select or create a mission first');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    try {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.kml,.kmz';
+      input.onchange = async (e: any) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const waypointSet = await importWaypointKMLFile(file);
+
+        if (!waypointSet || waypointSet.coordinates.length < 2) {
+          setStatusMessage('No valid waypoint points found in KML file');
+          setTimeout(() => setStatusMessage(''), 3000);
+          return;
+        }
+
+        const viewer = getCesiumViewer();
+        const baseWaypoints = waypointSet.coordinates.map((coord) => [coord[0], coord[1], altitude]);
+        const terrainAdjustedWaypoints = viewer
+          ? await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude)
+          : baseWaypoints;
+
+        updateMission(activeMissionId, {
+          missionType: 'waypoint',
+          aoi: null,
+          flightLines: [
+            {
+              id: 'waypoint-import-0',
+              coordinates: terrainAdjustedWaypoints,
+              photoPoints: [],
+            },
+          ],
+        });
+
+        const lons = waypointSet.coordinates.map(coord => coord[0]);
+        const lats = waypointSet.coordinates.map(coord => coord[1]);
+        const centerLon = (Math.min(...lons) + Math.max(...lons)) / 2;
+        const centerLat = (Math.min(...lats) + Math.max(...lats)) / 2;
+
+        setCameraTarget({
+          longitude: centerLon,
+          latitude: centerLat,
+          altitude: 2000,
+          heading: 0,
+          pitch: -90,
+          roll: 0,
+        });
+
+        setStatusMessage(`Waypoint KML imported: ${waypointSet.coordinates.length} points`);
+        setTimeout(() => setStatusMessage(''), 3000);
+      };
+      input.click();
+    } catch (error) {
+      console.error('Waypoint KML import failed:', error);
+      setStatusMessage('Failed to import waypoint KML file');
+      setTimeout(() => setStatusMessage(''), 3000);
+    }
+  };
+
   const handleDrawAOI = () => {
-    setStatusMessage('Drawing tools coming soon!');
-    setTimeout(() => setStatusMessage(''), 3000);
+    if (!activeMissionId) {
+      setStatusMessage('Please select or create a mission first');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    const nextMode = !drawAoiMode;
+    setDrawAoiMode(nextMode);
+
+    if (nextMode) {
+      setKmlEditMode(false);
+      updateMission(activeMissionId, { missionType: 'area', aoi: activeMission?.aoi ?? null });
+      setStatusMessage('Draw mode enabled: click to add points, right-click to finish polygon');
+    } else {
+      setStatusMessage('Draw mode canceled');
+    }
+
+    setTimeout(() => setStatusMessage(''), 4000);
   };
 
   const handleStartKMLEdit = () => {
-    if (!activeMission?.aoi || activeMission.aoi.type !== 'kml') return;
+    if (!activeMission?.aoi) return;
     setKmlEditMode(true);
-    setStatusMessage('KML edit mode enabled. Drag points on the map.');
+    setStatusMessage('Area edit mode enabled. Drag points on the map.');
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
@@ -227,7 +343,7 @@ export const FlightPlanner = () => {
 
   const handleDeleteKML = () => {
     if (!activeMissionId || !activeMission?.aoi) return;
-    if (!confirm('Delete imported KML area for this mission?')) return;
+    if (!confirm('Delete area for this mission?')) return;
 
     setKmlEditMode(false);
     updateMission(activeMissionId, {
@@ -239,6 +355,12 @@ export const FlightPlanner = () => {
   };
 
   const handleGenerateFlightPlan = async () => {
+    if (activeMission?.missionType === 'waypoint') {
+      setStatusMessage('Waypoint missions do not use photogrammetry generation');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
     if (!activeMissionId || !activeMission?.aoi) {
       setStatusMessage('Please import KML or draw an area first');
       setTimeout(() => setStatusMessage(''), 3000);
@@ -371,12 +493,12 @@ export const FlightPlanner = () => {
             <div className="status-message success">
               ✓ Area loaded: <strong>{activeMission.aoi.name}</strong>
             </div>
-            {activeMission.aoi.type === 'kml' && (
+            {activeMission.aoi && (
               <div className="kml-toolbar" aria-label="KML toolbar">
                 <button
                   className="kml-tool-btn kml-delete"
                   onClick={handleDeleteKML}
-                  title="Delete KML"
+                  title="Delete Area"
                 >
                   🗑️
                 </button>
@@ -384,7 +506,7 @@ export const FlightPlanner = () => {
                   className={`kml-tool-btn ${kmlEditMode ? 'active' : ''}`}
                   onClick={handleStartKMLEdit}
                   disabled={kmlEditMode}
-                  title="Edit KML"
+                  title="Edit Area"
                 >
                   ✏️
                 </button>
@@ -392,7 +514,7 @@ export const FlightPlanner = () => {
                   className="kml-tool-btn kml-save"
                   onClick={handleSaveKMLEdit}
                   disabled={!kmlEditMode}
-                  title="Save KML"
+                  title="Save Area"
                 >
                   💾
                 </button>
@@ -402,22 +524,34 @@ export const FlightPlanner = () => {
               <button className="btn-secondary" onClick={handleImportKML}>
                 📂 Replace with KML
               </button>
+              <button className="btn-secondary" onClick={handleImportWaypointKML}>
+                📍 Import Waypoint KML
+              </button>
               <button className="btn-secondary" onClick={handleDrawAOI}>
-                ✏️ Draw New Area
+                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw New Area'}
               </button>
             </div>
           </div>
         ) : (
           <div className="aoi-status">
-            <div className="status-message warning">
-              ⚠ No area defined
-            </div>
+            {activeMission?.missionType === 'waypoint' && activeMission.flightLines.length > 0 ? (
+              <div className="status-message success">
+                ✓ Waypoint route loaded: <strong>{activeMission.flightLines[0]?.coordinates.length || 0}</strong> points
+              </div>
+            ) : (
+              <div className="status-message warning">
+                ⚠ No area defined
+              </div>
+            )}
             <div className="aoi-actions">
               <button className="btn-primary" onClick={handleImportKML}>
                 📂 Import KML/KMZ
               </button>
+              <button className="btn-primary" onClick={handleImportWaypointKML}>
+                📍 Import Waypoint KML
+              </button>
               <button className="btn-primary" onClick={handleDrawAOI}>
-                ✏️ Draw on Map
+                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw on Map'}
               </button>
             </div>
           </div>
@@ -426,42 +560,48 @@ export const FlightPlanner = () => {
 
       {/* Step 2: Drone Configuration */}
       <section className="planner-section">
-        <h3>2. Drone Configuration</h3>
-        
-        <label>
-          Drone Model:
-          <select value={selectedDrone.id} onChange={(e) => handleDroneChange(e.target.value)}>
-            {DRONES.map((drone) => (
-              <option key={drone.id} value={drone.id}>
-                {drone.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <h3 className="section-title-row" onClick={() => setShowDroneConfig(!showDroneConfig)}>
+          2. Drone Configuration <span>{showDroneConfig ? '▾' : '▸'}</span>
+        </h3>
 
-        <label>
-          Camera/Payload:
-          <select value={selectedCamera.id} onChange={(e) => handleCameraChange(e.target.value)}>
-            {selectedDrone.cameras.map((camera) => (
-              <option key={camera.id} value={camera.id}>
-                {camera.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {showDroneConfig && (
+          <>
+            <label>
+              Drone Model:
+              <select value={selectedDrone.id} onChange={(e) => handleDroneChange(e.target.value)}>
+                {DRONES.map((drone) => (
+                  <option key={drone.id} value={drone.id}>
+                    {drone.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <div className="camera-info">
-          <small>
-            Sensor: {selectedCamera.sensorWidth}×{selectedCamera.sensorHeight}mm |
-            Resolution: {selectedCamera.imageWidth}×{selectedCamera.imageHeight}px |
-            Focal: {selectedCamera.focalLength}mm
-          </small>
-        </div>
+            <label>
+              Camera/Payload:
+              <select value={selectedCamera.id} onChange={(e) => handleCameraChange(e.target.value)}>
+                {selectedDrone.cameras.map((camera) => (
+                  <option key={camera.id} value={camera.id}>
+                    {camera.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="camera-info">
+              <small>
+                Sensor: {selectedCamera.sensorWidth}×{selectedCamera.sensorHeight}mm |
+                Resolution: {selectedCamera.imageWidth}×{selectedCamera.imageHeight}px |
+                Focal: {selectedCamera.focalLength}mm
+              </small>
+            </div>
+          </>
+        )}
       </section>
 
-      {/* Flight Parameters */}
+      {/* Common Flight Parameters */}
       <section className="planner-section">
-        <h3>3. Flight Parameters</h3>
+        <h3>3. Common Flight Parameters</h3>
 
         <label>
           Altitude (m AGL):
@@ -480,7 +620,15 @@ export const FlightPlanner = () => {
                     forwardOverlap,
                     sideOverlap,
                     flightAngle,
-                    gimbalPitch: -90,
+                    gimbalPitch,
+                    gimbalYaw,
+                    droneYaw,
+                    waypointTakePhoto,
+                    waypointRecordVideo,
+                    waypointHoverEnabled,
+                    waypointHoverTime,
+                    waypointAutoDroneHeading,
+                    waypointAutoGimbalYaw,
                   },
                 });
               }
@@ -501,50 +649,187 @@ export const FlightPlanner = () => {
             max={selectedDrone.maxSpeed}
             step="0.5"
           />
-          {flightPlan?.hasSpeedWarning && (
+          {activeMission?.missionType === 'area' && flightPlan?.hasSpeedWarning && (
             <span className="warning">⚠️ Speed may cause blur</span>
           )}
         </label>
+      </section>
 
-        <label>
-          Forward Overlap (%):
-          <input
-            type="number"
-            value={forwardOverlap}
-            onChange={(e) => setForwardOverlap(Number(e.target.value))}
-            min="50"
-            max="95"
-            step="5"
-          />
-        </label>
+      {/* Photogrammetry Parameters */}
+      <section className="planner-section">
+        <h3 className="section-title-row" onClick={() => setShowPhotogrammetry(!showPhotogrammetry)}>
+          4. Photogrammetry Parameters <span>{showPhotogrammetry ? '▾' : '▸'}</span>
+        </h3>
 
-        <label>
-          Side Overlap (%):
-          <input
-            type="number"
-            value={sideOverlap}
-            onChange={(e) => setSideOverlap(Number(e.target.value))}
-            min="50"
-            max="90"
-            step="5"
-          />
-        </label>
+        {showPhotogrammetry && (
+          <>
+            {activeMission?.missionType === 'waypoint' ? (
+              <div className="status-message warning">Disabled for waypoint missions</div>
+            ) : (
+              <>
+                <label>
+                  Forward Overlap (%):
+                  <input
+                    type="number"
+                    value={forwardOverlap}
+                    onChange={(e) => setForwardOverlap(Number(e.target.value))}
+                    min="50"
+                    max="95"
+                    step="5"
+                  />
+                </label>
 
-        <label>
-          Flight Angle (°):
-          <input
-            type="number"
-            value={flightAngle}
-            onChange={(e) => setFlightAngle(Number(e.target.value))}
-            min="0"
-            max="359"
-            step="1"
-          />
-        </label>
+                <label>
+                  Side Overlap (%):
+                  <input
+                    type="number"
+                    value={sideOverlap}
+                    onChange={(e) => setSideOverlap(Number(e.target.value))}
+                    min="50"
+                    max="90"
+                    step="5"
+                  />
+                </label>
+
+                <label>
+                  Flight Angle (°):
+                  <input
+                    type="number"
+                    value={flightAngle}
+                    onChange={(e) => setFlightAngle(Number(e.target.value))}
+                    min="0"
+                    max="359"
+                    step="1"
+                  />
+                </label>
+              </>
+            )}
+          </>
+        )}
+      </section>
+
+      {/* Waypoint Mission Parameters */}
+      <section className="planner-section">
+        <h3 className="section-title-row" onClick={() => setShowWaypointSettings(!showWaypointSettings)}>
+          5. Waypoint Settings <span>{showWaypointSettings ? '▾' : '▸'}</span>
+        </h3>
+
+        {showWaypointSettings && (
+          <>
+            {activeMission?.missionType !== 'waypoint' ? (
+              <div className="status-message warning">Enable by importing waypoint KML</div>
+            ) : (
+              <>
+                <label>
+                  Drone Yaw (°):
+                  <input
+                    type="number"
+                    value={droneYaw}
+                    onChange={(e) => setDroneYaw(Number(e.target.value))}
+                    min="-180"
+                    max="180"
+                    step="1"
+                    disabled={waypointAutoDroneHeading}
+                  />
+                </label>
+
+                <label className="inline-toggle">
+                  <input
+                    type="checkbox"
+                    checked={waypointAutoDroneHeading}
+                    onChange={(e) => setWaypointAutoDroneHeading(e.target.checked)}
+                  />
+                  Auto Drone Heading (Follow Wayline)
+                </label>
+
+                <label>
+                  Gimbal Pitch (°):
+                  <input
+                    type="number"
+                    value={gimbalPitch}
+                    onChange={(e) => setGimbalPitch(Number(e.target.value))}
+                    min="-120"
+                    max="30"
+                    step="1"
+                  />
+                </label>
+
+                <label>
+                  Gimbal Yaw (°):
+                  <input
+                    type="number"
+                    value={gimbalYaw}
+                    onChange={(e) => setGimbalYaw(Number(e.target.value))}
+                    min="-180"
+                    max="180"
+                    step="1"
+                    disabled={waypointAutoGimbalYaw}
+                  />
+                </label>
+
+                <label className="inline-toggle">
+                  <input
+                    type="checkbox"
+                    checked={waypointAutoGimbalYaw}
+                    onChange={(e) => setWaypointAutoGimbalYaw(e.target.checked)}
+                  />
+                  Auto Gimbal Yaw (Default)
+                </label>
+
+                <label>
+                  <span>Take Photo at Waypoints</span>
+                  <select
+                    value={waypointTakePhoto ? 'yes' : 'no'}
+                    onChange={(e) => setWaypointTakePhoto(e.target.value === 'yes')}
+                  >
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Record Video (Start/Stop)</span>
+                  <select
+                    value={waypointRecordVideo ? 'yes' : 'no'}
+                    onChange={(e) => setWaypointRecordVideo(e.target.value === 'yes')}
+                  >
+                    <option value="no">No</option>
+                    <option value="yes">Yes</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>Hover at Waypoints</span>
+                  <select
+                    value={waypointHoverEnabled ? 'yes' : 'no'}
+                    onChange={(e) => setWaypointHoverEnabled(e.target.value === 'yes')}
+                  >
+                    <option value="no">No</option>
+                    <option value="yes">Yes</option>
+                  </select>
+                </label>
+
+                {waypointHoverEnabled && (
+                  <label>
+                    Hover Time (s):
+                    <input
+                      type="number"
+                      value={waypointHoverTime}
+                      onChange={(e) => setWaypointHoverTime(Number(e.target.value))}
+                      min="1"
+                      max="120"
+                      step="1"
+                    />
+                  </label>
+                )}
+              </>
+            )}
+          </>
+        )}
       </section>
 
       {/* Calculated Results */}
-      {flightPlan && (
+      {activeMission?.missionType !== 'waypoint' && flightPlan && (
         <section className="planner-section results">
           <h3>Calculated Results</h3>
 
@@ -634,8 +919,8 @@ export const FlightPlanner = () => {
         <button 
           className="btn-primary" 
           onClick={handleGenerateFlightPlan}
-          disabled={!activeMission?.aoi}
-          title={!activeMission?.aoi ? 'Import KML or draw an area first' : 'Generate flight lines'}
+          disabled={!activeMission?.aoi || activeMission?.missionType === 'waypoint'}
+          title={activeMission?.missionType === 'waypoint' ? 'Disabled for waypoint missions' : !activeMission?.aoi ? 'Import KML or draw an area first' : 'Generate flight lines'}
         >
           🚁 Generate Flight Plan
         </button>

@@ -118,7 +118,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
 
   // Add waypoints
   waypoints.forEach((wp, index) => {
-    xml += generateWaypointXML(wp, index, parameters);
+    xml += generateWaypointXML(wp, index, parameters, waypoints.length);
   });
 
   xml += `  </Folder>
@@ -146,6 +146,9 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     payloadInfo.payloadSubEnumValue !== undefined
       ? `\n      <wpml:payloadSubEnumValue>${payloadInfo.payloadSubEnumValue}</wpml:payloadSubEnumValue>`
       : '';
+
+  const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
+  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NAMESPACE}">
@@ -181,8 +184,8 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     <wpml:caliFlightEnable>0</wpml:caliFlightEnable>
     <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>
     <wpml:globalWaypointHeadingParam>
-      <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
-      <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+      <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
+      <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
       <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
     </wpml:globalWaypointHeadingParam>
     <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
@@ -211,8 +214,76 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
 const generateWaypointXML = (
   waypoint: WaypointData,
   index: number,
-  parameters: any
+  parameters: any,
+  totalWaypoints: number
 ): string => {
+  const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
+  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
+  const useAutoGimbalYaw = parameters.waypointAutoGimbalYaw ?? true;
+
+  const actions: string[] = [];
+  let actionId = 0;
+
+  actions.push(`        <wpml:action>
+          <wpml:actionId>${actionId++}</wpml:actionId>
+          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase>
+            <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
+            <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
+            <wpml:gimbalPitchRotateAngle>${parameters.gimbalPitch}</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
+            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
+            <wpml:gimbalYawRotateEnable>${useAutoGimbalYaw ? 0 : 1}</wpml:gimbalYawRotateEnable>
+            <wpml:gimbalYawRotateAngle>${useAutoGimbalYaw ? 0 : (parameters.gimbalYaw ?? 0)}</wpml:gimbalYawRotateAngle>
+            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
+            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>`);
+
+  if (parameters.waypointHoverEnabled) {
+    actions.push(`        <wpml:action>
+          <wpml:actionId>${actionId++}</wpml:actionId>
+          <wpml:actionActuatorFunc>hover</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:hoverTime>${Math.max(1, Number(parameters.waypointHoverTime) || 1)}</wpml:hoverTime>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>`);
+  }
+
+  if (parameters.waypointRecordVideo && index === 0) {
+    actions.push(`        <wpml:action>
+          <wpml:actionId>${actionId++}</wpml:actionId>
+          <wpml:actionActuatorFunc>startRecord</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:fileSuffix>wp-video-start</wpml:fileSuffix>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>`);
+  }
+
+  if (parameters.waypointTakePhoto !== false) {
+    actions.push(`        <wpml:action>
+          <wpml:actionId>${actionId++}</wpml:actionId>
+          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:fileSuffix>point${index}</wpml:fileSuffix>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>`);
+  }
+
+  if (parameters.waypointRecordVideo && index === totalWaypoints - 1) {
+    actions.push(`        <wpml:action>
+          <wpml:actionId>${actionId++}</wpml:actionId>
+          <wpml:actionActuatorFunc>stopRecord</wpml:actionActuatorFunc>
+          <wpml:actionActuatorFuncParam>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+          </wpml:actionActuatorFuncParam>
+        </wpml:action>`);
+  }
+
   return `    <Placemark>
       <Point>
         <coordinates>${waypoint.lon.toFixed(8)},${waypoint.lat.toFixed(8)}</coordinates>
@@ -221,8 +292,8 @@ const generateWaypointXML = (
       <wpml:executeHeight>${waypoint.alt.toFixed(2)}</wpml:executeHeight>
       <wpml:waypointSpeed>${parameters.speed}</wpml:waypointSpeed>
       <wpml:waypointHeadingParam>
-        <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
-        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+        <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
+        <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
         <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
       </wpml:waypointHeadingParam>
       <wpml:waypointTurnParam>
@@ -239,31 +310,7 @@ const generateWaypointXML = (
         <wpml:actionTrigger>
           <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
         </wpml:actionTrigger>
-        <wpml:action>
-          <wpml:actionId>0</wpml:actionId>
-          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase>
-            <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
-            <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
-            <wpml:gimbalPitchRotateAngle>${parameters.gimbalPitch}</wpml:gimbalPitchRotateAngle>
-            <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
-            <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
-            <wpml:gimbalYawRotateEnable>0</wpml:gimbalYawRotateEnable>
-            <wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>
-            <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
-            <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>
-        <wpml:action>
-          <wpml:actionId>1</wpml:actionId>
-          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
-          <wpml:actionActuatorFuncParam>
-            <wpml:fileSuffix>point${index}</wpml:fileSuffix>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-          </wpml:actionActuatorFuncParam>
-        </wpml:action>
+${actions.join('\n')}
       </wpml:actionGroup>
     </Placemark>
 `;
@@ -289,6 +336,7 @@ const generateTemplateWaypointXML = (
       <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
       <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>
       <wpml:gimbalPitchAngle>${parameters.gimbalPitch}</wpml:gimbalPitchAngle>
+      <wpml:gimbalYawAngle>${(parameters.waypointAutoGimbalYaw ?? true) ? 0 : (parameters.gimbalYaw ?? 0)}</wpml:gimbalYawAngle>
     </Placemark>
 `;
 };

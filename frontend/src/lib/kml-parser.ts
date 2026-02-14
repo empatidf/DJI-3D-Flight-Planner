@@ -11,6 +11,11 @@ export interface KMLPolygon {
   description?: string;
 }
 
+export interface KMLWaypointSet {
+  name: string;
+  coordinates: number[][]; // [lon, lat, alt][]
+}
+
 /**
  * Parse KML XML and extract polygon geometries
  * @param kmlText - KML XML text content
@@ -76,6 +81,69 @@ export const parseKML = (kmlText: string): KMLPolygon[] => {
 };
 
 /**
+ * Parse KML XML and extract waypoint point geometries
+ * @param kmlText - KML XML text content
+ * @returns A waypoint set containing all Placemark points
+ */
+export const parseKMLWaypoints = (kmlText: string): KMLWaypointSet | null => {
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(kmlText, 'text/xml');
+
+  const parserError = xmlDoc.querySelector('parsererror');
+  if (parserError) {
+    throw new Error('Invalid KML file: ' + parserError.textContent);
+  }
+
+  const placemarks = Array.from(xmlDoc.querySelectorAll('Placemark'));
+  const coordinates: number[][] = [];
+
+  const parseCoordinateList = (coordsText: string): number[][] => {
+    return coordsText
+      .trim()
+      .split(/\s+/)
+      .filter((token) => token.length > 0)
+      .map((token) => token.split(',').map(parseFloat))
+      .filter((parts) => Number.isFinite(parts[0]) && Number.isFinite(parts[1]))
+      .map((parts) => [parts[0], parts[1], Number.isFinite(parts[2]) ? parts[2] : 0]);
+  };
+
+  placemarks.forEach((placemark) => {
+    const lineCoordinates = placemark.querySelector('LineString coordinates');
+    if (lineCoordinates?.textContent?.trim()) {
+      coordinates.push(...parseCoordinateList(lineCoordinates.textContent));
+      return;
+    }
+
+    const multiLineCoordinates = placemark.querySelectorAll('MultiGeometry LineString coordinates');
+    if (multiLineCoordinates.length > 0) {
+      multiLineCoordinates.forEach((node) => {
+        if (node.textContent?.trim()) {
+          coordinates.push(...parseCoordinateList(node.textContent));
+        }
+      });
+      return;
+    }
+
+    const pointCoordinates = placemark.querySelector('Point coordinates');
+    const pointText = pointCoordinates?.textContent?.trim();
+    if (pointText) {
+      const parsed = parseCoordinateList(pointText);
+      if (parsed.length > 0) {
+        coordinates.push(parsed[0]);
+      }
+    }
+  });
+
+  if (coordinates.length < 2) return null;
+
+  const docName = xmlDoc.querySelector('Document > name')?.textContent?.trim() || 'Waypoint Mission';
+  return {
+    name: docName,
+    coordinates,
+  };
+};
+
+/**
  * Parse KMZ file (zipped KML)
  * @param file - KMZ file object
  * @returns Array of polygon objects
@@ -128,6 +196,38 @@ export const importKMLFile = async (file: File): Promise<KMLPolygon[]> => {
   } else {
     throw new Error('File must be a .kml or .kmz file');
   }
+};
+
+export const importWaypointKMLFile = async (file: File): Promise<KMLWaypointSet | null> => {
+  const fileName = file.name.toLowerCase();
+
+  if (fileName.endsWith('.kmz')) {
+    const zip = new JSZip();
+    const zipContent = await zip.loadAsync(file);
+
+    let kmlFile = zipContent.file('doc.kml');
+    if (!kmlFile) {
+      const kmlFiles = Object.keys(zipContent.files).filter((name) => name.toLowerCase().endsWith('.kml'));
+      if (kmlFiles.length === 0) {
+        throw new Error('No KML file found in KMZ archive');
+      }
+      kmlFile = zipContent.file(kmlFiles[0]);
+    }
+
+    if (!kmlFile) {
+      throw new Error('Could not read KML file from KMZ');
+    }
+
+    const kmlText = await kmlFile.async('text');
+    return parseKMLWaypoints(kmlText);
+  }
+
+  if (fileName.endsWith('.kml')) {
+    const text = await file.text();
+    return parseKMLWaypoints(text);
+  }
+
+  throw new Error('File must be a .kml or .kmz file');
 };
 
 /**
