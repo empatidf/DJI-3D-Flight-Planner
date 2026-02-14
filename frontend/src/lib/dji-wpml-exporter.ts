@@ -371,6 +371,13 @@ const resolveDroneInfo = (droneName: string): { droneEnumValue: number; droneSub
     return { droneEnumValue: 77, droneSubEnumValue: 2 };
   }
   if (
+    normalized.includes('matrice 4e') ||
+    /\bm4e\b/.test(normalized)
+  ) {
+    return { droneEnumValue: 77, droneSubEnumValue: 0 };
+  }
+
+  if (
     normalized.includes('mavic 3e') ||
     normalized.includes('mavic 3 enterprise') ||
     /\bm3e\b/.test(normalized)
@@ -394,6 +401,10 @@ const resolvePayloadInfo = (
 
   if (normalizedId.includes('p1') || normalizedName.includes('p1')) {
     return { payloadEnumValue: 50, payloadSubEnumValue: 2 };
+  }
+
+  if (normalizedId.includes('sony-ilx-lr1') || normalizedName.includes('sony ilx-lr1')) {
+    return { payloadEnumValue: 65534 };
   }
 
   if (normalizedId.includes('l2') || normalizedName.includes('l2')) {

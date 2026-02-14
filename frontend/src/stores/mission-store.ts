@@ -75,6 +75,8 @@ interface MissionStore {
   activeMissionId: string | null;
   kmlEditMode: boolean;
   drawAoiMode: boolean;
+  drawWaypointMode: boolean;
+  showWaypointHeightGuides: boolean;
   layers: Layer[];
   viewMode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW';
   cameraTarget: CameraTarget | null;
@@ -98,6 +100,8 @@ interface MissionStore {
   setCameraTarget: (target: CameraTarget | null) => void;
   setKmlEditMode: (enabled: boolean) => void;
   setDrawAoiMode: (enabled: boolean) => void;
+  setDrawWaypointMode: (enabled: boolean) => void;
+  setShowWaypointHeightGuides: (enabled: boolean) => void;
 }
 
 export const useMissionStore = create<MissionStore>((set, get) => ({
@@ -105,6 +109,8 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
   activeMissionId: null,
   kmlEditMode: false,
   drawAoiMode: false,
+  drawWaypointMode: false,
+  showWaypointHeightGuides: false,
   layers: [
     {
       id: 'basemap',
@@ -240,5 +246,13 @@ export const useMissionStore = create<MissionStore>((set, get) => ({
 
   setDrawAoiMode: (enabled) => {
     set({ drawAoiMode: enabled });
+  },
+
+  setDrawWaypointMode: (enabled) => {
+    set({ drawWaypointMode: enabled });
+  },
+
+  setShowWaypointHeightGuides: (enabled) => {
+    set({ showWaypointHeightGuides: enabled });
   },
 }));

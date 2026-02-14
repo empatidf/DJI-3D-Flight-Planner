@@ -48,8 +48,11 @@ export const CesiumMap = () => {
   const activeMissionId = useMissionStore((state) => state.activeMissionId);
   const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
   const drawAoiMode = useMissionStore((state) => state.drawAoiMode);
+  const drawWaypointMode = useMissionStore((state) => state.drawWaypointMode);
+  const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
   const updateMission = useMissionStore((state) => state.updateMission);
   const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
+  const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
   const layers = useMissionStore((state) => state.layers);
 
   const getLonLatFromScreenPosition = (viewer: Viewer, position: Cartesian2) => {
@@ -548,6 +551,333 @@ export const CesiumMap = () => {
     };
   }, [activeMissionId, kmlEditMode, updateMission]);
 
+  // Waypoint line editing for imported waypoint missions
+  useEffect(() => {
+    if (!viewerRef.current || !activeMissionId || !kmlEditMode) return;
+
+    const viewer = viewerRef.current;
+    const activeMission = useMissionStore
+      .getState()
+      .missions.find((mission) => mission.id === activeMissionId);
+
+    if (
+      !activeMission ||
+      activeMission.missionType !== 'waypoint' ||
+      !activeMission.flightLines ||
+      activeMission.flightLines.length === 0 ||
+      activeMission.flightLines[0].coordinates.length < 2
+    ) {
+      return;
+    }
+
+    const missionAltitude = activeMission.parameters.altitude;
+    const initialCoordinates = activeMission.flightLines[0].coordinates.map((coord) => {
+      const altitude = Number.isFinite(coord[2]) ? coord[2] : missionAltitude;
+      return [coord[0], coord[1], altitude];
+    });
+
+    const editCoordinates = { current: initialCoordinates } as { current: number[][] };
+
+    const lineEntity = viewer.entities.add({
+      id: `wp-edit-line-${activeMissionId}`,
+      polyline: {
+        positions: new CallbackProperty(() => {
+          return editCoordinates.current.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1], coord[2]));
+        }, false),
+        width: 3,
+        material: Color.YELLOW,
+        clampToGround: false,
+        arcType: 0,
+      },
+    });
+
+    let pointEntities: Entity[] = [];
+    let addPointEntities: Entity[] = [];
+    let guideLineEntities: Entity[] = [];
+    let guideLabelEntities: Entity[] = [];
+    let deletePointEntity: Entity | null = null;
+    let selectedPointIndex: number | null = null;
+    let draggingPointIndex: number | null = null;
+
+    const setNavigationEnabled = (enabled: boolean) => {
+      const controller = viewer.scene.screenSpaceCameraController;
+      controller.enableRotate = enabled;
+      controller.enableTranslate = enabled;
+      controller.enableTilt = enabled;
+      controller.enableZoom = enabled;
+      controller.enableLook = enabled;
+    };
+
+    const removeEntityGroup = (entities: Entity[]) => {
+      entities.forEach((entity) => viewer.entities.remove(entity));
+    };
+
+    const persistCoordinatesToStore = () => {
+      const missionFromStore = useMissionStore
+        .getState()
+        .missions.find((mission) => mission.id === activeMissionId);
+
+      if (!missionFromStore || missionFromStore.missionType !== 'waypoint' || !missionFromStore.flightLines?.length) {
+        return;
+      }
+
+      const updatedFirstLine = {
+        ...missionFromStore.flightLines[0],
+        coordinates: editCoordinates.current.map((coord) => [coord[0], coord[1], coord[2]]),
+      };
+
+      updateMission(activeMissionId, {
+        flightLines: [updatedFirstLine, ...missionFromStore.flightLines.slice(1)],
+      });
+    };
+
+    const buildMidPointCartesian = (edgeIndex: number) => {
+      const coords = editCoordinates.current;
+      if (coords.length < 2 || edgeIndex < 0 || edgeIndex >= coords.length - 1) {
+        return Cartesian3.fromDegrees(0, 0, missionAltitude);
+      }
+      const first = coords[edgeIndex];
+      const second = coords[edgeIndex + 1];
+      return Cartesian3.fromDegrees(
+        (first[0] + second[0]) / 2,
+        (first[1] + second[1]) / 2,
+        (first[2] + second[2]) / 2
+      );
+    };
+
+    const getTerrainHeightAt = (coord: number[]) => {
+      const globeHeight = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
+      return typeof globeHeight === 'number' && Number.isFinite(globeHeight) ? globeHeight : 0;
+    };
+
+    const toVerticalText = (height: number) => {
+      const text = `${height.toFixed(1)}m`;
+      return text.split('').join('\n');
+    };
+
+    const getDjiRelativeHeightAt = (index: number) => {
+      const coords = editCoordinates.current;
+      if (!coords.length || !coords[index]) return missionAltitude;
+
+      const firstAltitude = Number.isFinite(coords[0][2]) ? coords[0][2] : missionAltitude;
+      const pointAltitude = Number.isFinite(coords[index][2]) ? coords[index][2] : missionAltitude;
+
+      return missionAltitude + (pointAltitude - firstAltitude);
+    };
+
+    const rebuildEditHandles = () => {
+      removeEntityGroup(pointEntities);
+      removeEntityGroup(addPointEntities);
+      removeEntityGroup(guideLineEntities);
+      removeEntityGroup(guideLabelEntities);
+      pointEntities = [];
+      addPointEntities = [];
+      guideLineEntities = [];
+      guideLabelEntities = [];
+
+      if (deletePointEntity) {
+        viewer.entities.remove(deletePointEntity);
+        deletePointEntity = null;
+      }
+
+      const coords = editCoordinates.current;
+      pointEntities = coords.map((coord, index) => {
+        const isSelected = selectedPointIndex === index;
+        return viewer.entities.add({
+          id: `wp-edit-point-${activeMissionId}-${index}`,
+          position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+          point: {
+            pixelSize: isSelected ? 13 : 11,
+            color: isSelected ? Color.RED : Color.CYAN,
+            outlineColor: Color.WHITE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+      });
+
+      if (coords.length >= 2) {
+        addPointEntities = coords.slice(0, -1).map((_, edgeIndex) => {
+          return viewer.entities.add({
+            id: `wp-edit-add-${activeMissionId}-${edgeIndex}`,
+            position: new CallbackPositionProperty(() => buildMidPointCartesian(edgeIndex), false),
+            label: {
+              text: '+',
+              font: 'bold 20px sans-serif',
+              fillColor: Color.RED,
+              outlineColor: Color.BLACK,
+              outlineWidth: 2,
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+          });
+        });
+      }
+
+      if (showWaypointHeightGuides) {
+        guideLineEntities = coords.map((_, index) => {
+          return viewer.entities.add({
+            id: `wp-edit-guide-line-${activeMissionId}-${index}`,
+            polyline: {
+              positions: new CallbackProperty(() => {
+                const current = editCoordinates.current[index];
+                if (!current) return [];
+                const terrainHeight = getTerrainHeightAt(current);
+                return [
+                  Cartesian3.fromDegrees(current[0], current[1], current[2]),
+                  Cartesian3.fromDegrees(current[0], current[1], terrainHeight),
+                ];
+              }, false),
+              width: 2,
+              material: Color.CYAN.withAlpha(0.75),
+              clampToGround: false,
+              arcType: 0,
+            },
+          });
+        });
+
+        guideLabelEntities = coords.map((_, index) => {
+          return viewer.entities.add({
+            id: `wp-edit-guide-label-${activeMissionId}-${index}`,
+            position: new CallbackPositionProperty(() => {
+              const current = editCoordinates.current[index];
+              if (!current) return Cartesian3.fromDegrees(0, 0, missionAltitude);
+              const terrainHeight = getTerrainHeightAt(current);
+              const midHeight = (current[2] + terrainHeight) / 2;
+              return Cartesian3.fromDegrees(current[0], current[1], midHeight);
+            }, false),
+            label: {
+              text: new CallbackProperty(() => {
+                const current = editCoordinates.current[index];
+                if (!current) return '';
+                const djiRelativeHeight = getDjiRelativeHeightAt(index);
+                return toVerticalText(djiRelativeHeight);
+              }, false),
+              font: 'bold 11px sans-serif',
+              fillColor: Color.WHITE,
+              outlineColor: Color.BLACK,
+              outlineWidth: 2,
+              pixelOffset: new Cartesian2(8, 0),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+          });
+        });
+      }
+
+      if (selectedPointIndex !== null && coords.length > 2) {
+        deletePointEntity = viewer.entities.add({
+          id: `wp-edit-delete-${activeMissionId}`,
+          position: new CallbackPositionProperty(() => {
+            const selected = editCoordinates.current[selectedPointIndex!];
+            return selected
+              ? Cartesian3.fromDegrees(selected[0], selected[1], selected[2])
+              : Cartesian3.fromDegrees(0, 0, missionAltitude);
+          }, false),
+          label: {
+            text: '🗑',
+            font: '18px sans-serif',
+            pixelOffset: new Cartesian2(-26, 0),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+      }
+    };
+
+    rebuildEditHandles();
+
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    handler.setInputAction((event: { position: Cartesian2 }) => {
+      const picked = viewer.scene.pick(event.position) as { id?: Entity } | undefined;
+      if (!picked?.id || typeof picked.id.id !== 'string') return;
+
+      if (picked.id.id === `wp-edit-delete-${activeMissionId}`) {
+        if (selectedPointIndex !== null && editCoordinates.current.length > 2) {
+          editCoordinates.current.splice(selectedPointIndex, 1);
+          selectedPointIndex = null;
+          rebuildEditHandles();
+          persistCoordinatesToStore();
+          viewer.scene.requestRender();
+        }
+        return;
+      }
+
+      const addMatch = picked.id.id.match(new RegExp(`^wp-edit-add-${activeMissionId}-(\\d+)$`));
+      if (addMatch) {
+        const edgeIndex = Number(addMatch[1]);
+        const coords = editCoordinates.current;
+        if (edgeIndex >= 0 && edgeIndex < coords.length - 1) {
+          const first = coords[edgeIndex];
+          const second = coords[edgeIndex + 1];
+          const midpoint: number[] = [
+            (first[0] + second[0]) / 2,
+            (first[1] + second[1]) / 2,
+            (first[2] + second[2]) / 2,
+          ];
+          coords.splice(edgeIndex + 1, 0, midpoint);
+          selectedPointIndex = edgeIndex + 1;
+          rebuildEditHandles();
+          persistCoordinatesToStore();
+          viewer.scene.requestRender();
+        }
+        return;
+      }
+
+      const pointMatch = picked.id.id.match(new RegExp(`^wp-edit-point-${activeMissionId}-(\\d+)$`));
+      if (pointMatch) {
+        draggingPointIndex = Number(pointMatch[1]);
+        selectedPointIndex = draggingPointIndex;
+        rebuildEditHandles();
+        setNavigationEnabled(false);
+      }
+    }, ScreenSpaceEventType.LEFT_DOWN);
+
+    handler.setInputAction((event: { endPosition: Cartesian2 }) => {
+      if (draggingPointIndex === null) return;
+
+      const lonLat = getLonLatFromScreenPosition(viewer, event.endPosition);
+      if (!lonLat) return;
+
+      const currentCoords = editCoordinates.current;
+      const altitude = Number.isFinite(currentCoords[draggingPointIndex][2])
+        ? currentCoords[draggingPointIndex][2]
+        : missionAltitude;
+
+      currentCoords[draggingPointIndex] = [lonLat.lon, lonLat.lat, altitude];
+
+      const draggedPoint = pointEntities[draggingPointIndex];
+      if (draggedPoint) {
+        draggedPoint.position = new ConstantPositionProperty(
+          Cartesian3.fromDegrees(lonLat.lon, lonLat.lat, altitude)
+        );
+      }
+
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.MOUSE_MOVE);
+
+    const stopDrag = () => {
+      if (draggingPointIndex !== null) {
+        persistCoordinatesToStore();
+        draggingPointIndex = null;
+        setNavigationEnabled(true);
+      }
+    };
+
+    handler.setInputAction(stopDrag, ScreenSpaceEventType.LEFT_UP);
+
+    return () => {
+      handler.destroy();
+      setNavigationEnabled(true);
+      viewer.entities.remove(lineEntity);
+      removeEntityGroup(pointEntities);
+      removeEntityGroup(addPointEntities);
+      removeEntityGroup(guideLineEntities);
+      removeEntityGroup(guideLabelEntities);
+      if (deletePointEntity) {
+        viewer.entities.remove(deletePointEntity);
+      }
+    };
+  }, [activeMissionId, kmlEditMode, showWaypointHeightGuides, updateMission]);
+
   // AOI draw mode: click points, live preview line, right-click to finish polygon
   useEffect(() => {
     if (!viewerRef.current || !activeMissionId || !drawAoiMode) return;
@@ -647,6 +977,115 @@ export const CesiumMap = () => {
     };
   }, [activeMissionId, drawAoiMode, setDrawAoiMode, updateMission]);
 
+  // Waypoint draw mode: click points, live preview line, right-click to finish route
+  useEffect(() => {
+    if (!viewerRef.current || !activeMissionId || !drawWaypointMode) return;
+
+    const viewer = viewerRef.current;
+    const activeMission = useMissionStore
+      .getState()
+      .missions.find((mission) => mission.id === activeMissionId);
+
+    if (!activeMission) return;
+
+    const drawAltitude = Number.isFinite(activeMission.parameters.altitude)
+      ? activeMission.parameters.altitude
+      : 100;
+    drawPointsRef.current = [];
+    drawHoverRef.current = null;
+
+    const drawLineEntity = viewer.entities.add({
+      id: `draw-waypoint-line-${activeMissionId}`,
+      polyline: {
+        positions: new CallbackProperty(() => {
+          const points = drawPointsRef.current;
+          const hover = drawHoverRef.current;
+          const path = hover ? [...points, hover] : points;
+          return path.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1], coord[2]));
+        }, false),
+        width: 3,
+        material: Color.YELLOW,
+        clampToGround: false,
+        arcType: 0,
+      },
+    });
+
+    const drawPointEntities: Entity[] = [];
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    const addDrawPointEntity = (coord: number[], index: number) => {
+      const entity = viewer.entities.add({
+        id: `draw-waypoint-point-${activeMissionId}-${index}`,
+        position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+        point: {
+          pixelSize: 10,
+          color: Color.YELLOW,
+          outlineColor: Color.WHITE,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+      drawPointEntities.push(entity);
+    };
+
+    handler.setInputAction((event: { endPosition: Cartesian2 }) => {
+      const lonLat = getLonLatFromScreenPosition(viewer, event.endPosition);
+      if (!lonLat) return;
+
+      drawHoverRef.current = [lonLat.lon, lonLat.lat, drawAltitude];
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.MOUSE_MOVE);
+
+    handler.setInputAction((event: { position: Cartesian2 }) => {
+      const picked = viewer.scene.pick(event.position) as { id?: Entity } | undefined;
+      if (
+        picked?.id &&
+        typeof picked.id.id === 'string' &&
+        picked.id.id.startsWith(`draw-waypoint-point-${activeMissionId}-`)
+      ) {
+        return;
+      }
+
+      const lonLat = getLonLatFromScreenPosition(viewer, event.position);
+      if (!lonLat) return;
+
+      const newPoint: number[] = [lonLat.lon, lonLat.lat, drawAltitude];
+      drawPointsRef.current = [...drawPointsRef.current, newPoint];
+      addDrawPointEntity(newPoint, drawPointsRef.current.length - 1);
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
+    handler.setInputAction(async () => {
+      const points = drawPointsRef.current;
+      if (points.length < 2) return;
+
+      const terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, points, drawAltitude);
+
+      updateMission(activeMissionId, {
+        missionType: 'waypoint',
+        aoi: null,
+        flightLines: [
+          {
+            id: `waypoint-draw-${Date.now()}`,
+            coordinates: terrainAdjustedWaypoints,
+            photoPoints: [],
+          },
+        ],
+      });
+
+      setDrawWaypointMode(false);
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.RIGHT_CLICK);
+
+    return () => {
+      handler.destroy();
+      viewer.entities.remove(drawLineEntity);
+      drawPointEntities.forEach((entity) => viewer.entities.remove(entity));
+      drawPointsRef.current = [];
+      drawHoverRef.current = null;
+    };
+  }, [activeMissionId, drawWaypointMode, setDrawWaypointMode, updateMission]);
+
   // Render imagery layers (RGB/DSM/Cesium Ion)
   useEffect(() => {
     if (!viewerRef.current) return;
@@ -728,6 +1167,8 @@ export const CesiumMap = () => {
       if (
         entity.id.startsWith('flight-line-') ||
         entity.id.startsWith('flight-connector-') ||
+        entity.id.startsWith('waypoint-guide-line-') ||
+        entity.id.startsWith('waypoint-guide-label-') ||
         entity.id.startsWith('waypoint-')
       ) {
         entitiesToRemove.push(entity);
@@ -753,6 +1194,11 @@ export const CesiumMap = () => {
       
       if (!mission.flightLines || mission.flightLines.length === 0) {
         console.log(`  Skipping ${mission.name} - no flight lines`);
+        return;
+      }
+
+      if (kmlEditMode && mission.id === activeMissionId && mission.missionType === 'waypoint') {
+        console.log(`  Skipping ${mission.name} default render - waypoint edit overlay active`);
         return;
       }
 
@@ -898,13 +1344,53 @@ export const CesiumMap = () => {
                 }
               : undefined,
           });
+
+          if (mission.missionType === 'waypoint' && showWaypointHeightGuides) {
+            const terrainHeightRaw = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
+            const terrainHeight = typeof terrainHeightRaw === 'number' && Number.isFinite(terrainHeightRaw)
+              ? terrainHeightRaw
+              : 0;
+
+            const firstCoord = safeCoordinates[0];
+            const firstAltitude = Number.isFinite(firstCoord?.[2]) ? firstCoord[2] : missionAltitude;
+            const pointAltitude = Number.isFinite(coord[2]) ? coord[2] : missionAltitude;
+            const djiRelativeHeight = missionAltitude + (pointAltitude - firstAltitude);
+
+            viewer.entities.add({
+              id: `waypoint-guide-line-${mission.id}-${lineIndex}-${wpIndex}`,
+              polyline: {
+                positions: [
+                  Cartesian3.fromDegrees(coord[0], coord[1], pointAltitude),
+                  Cartesian3.fromDegrees(coord[0], coord[1], terrainHeight),
+                ],
+                width: 2,
+                material: Color.CYAN.withAlpha(0.75),
+                clampToGround: false,
+                arcType: 0,
+              },
+            });
+
+            viewer.entities.add({
+              id: `waypoint-guide-label-${mission.id}-${lineIndex}-${wpIndex}`,
+              position: Cartesian3.fromDegrees(coord[0], coord[1], (pointAltitude + terrainHeight) / 2),
+              label: {
+                text: `${djiRelativeHeight.toFixed(1)}m`.split('').join('\n'),
+                font: 'bold 11px sans-serif',
+                fillColor: Color.WHITE,
+                outlineColor: Color.BLACK,
+                outlineWidth: 2,
+                pixelOffset: new Cartesian2(8, 0),
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              },
+            });
+          }
         });
       });
     });
     
     console.log(`=== RENDER COMPLETE: ${totalLinesRendered} flight lines rendered ===`);
     console.log(`Total entities in viewer: ${viewer.entities.values.length}`);
-  }, [missions]);
+  }, [missions, kmlEditMode, activeMissionId, showWaypointHeightGuides]);
 
   return (
     <div 

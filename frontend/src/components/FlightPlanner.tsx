@@ -22,6 +22,10 @@ export const FlightPlanner = () => {
   const setKmlEditMode = useMissionStore((state) => state.setKmlEditMode);
   const drawAoiMode = useMissionStore((state) => state.drawAoiMode);
   const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
+  const drawWaypointMode = useMissionStore((state) => state.drawWaypointMode);
+  const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
+  const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
+  const setShowWaypointHeightGuides = useMissionStore((state) => state.setShowWaypointHeightGuides);
 
   const activeMission = missions.find(m => m.id === activeMissionId);
 
@@ -72,10 +76,17 @@ export const FlightPlanner = () => {
   }, [activeMissionId]);
 
   useEffect(() => {
-    if (!activeMission?.aoi) {
+    const hasEditableArea = !!activeMission?.aoi;
+    const hasEditableWaypoints =
+      activeMission?.missionType === 'waypoint' &&
+      !!activeMission.flightLines &&
+      activeMission.flightLines.length > 0 &&
+      activeMission.flightLines[0].coordinates.length > 0;
+
+    if (!hasEditableArea && !hasEditableWaypoints) {
       setKmlEditMode(false);
     }
-  }, [activeMission?.id, activeMission?.aoi, setKmlEditMode]);
+  }, [activeMission?.id, activeMission?.aoi, activeMission?.missionType, activeMission?.flightLines, setKmlEditMode]);
 
   // Update flight plan calculations when parameters change
   useEffect(() => {
@@ -319,6 +330,7 @@ export const FlightPlanner = () => {
 
     if (nextMode) {
       setKmlEditMode(false);
+      setDrawWaypointMode(false);
       updateMission(activeMissionId, { missionType: 'area', aoi: activeMission?.aoi ?? null });
       setStatusMessage('Draw mode enabled: click to add points, right-click to finish polygon');
     } else {
@@ -328,8 +340,37 @@ export const FlightPlanner = () => {
     setTimeout(() => setStatusMessage(''), 4000);
   };
 
+  const handleDrawWaypoint = () => {
+    if (!activeMissionId) {
+      setStatusMessage('Please select or create a mission first');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    const nextMode = !drawWaypointMode;
+    setDrawWaypointMode(nextMode);
+
+    if (nextMode) {
+      setKmlEditMode(false);
+      setDrawAoiMode(false);
+      updateMission(activeMissionId, { missionType: 'waypoint', aoi: null });
+      setStatusMessage('Waypoint draw enabled: click to add points, right-click to finish');
+    } else {
+      setStatusMessage('Waypoint draw canceled');
+    }
+
+    setTimeout(() => setStatusMessage(''), 4000);
+  };
+
   const handleStartKMLEdit = () => {
-    if (!activeMission?.aoi) return;
+    const hasEditableTarget =
+      !!activeMission?.aoi ||
+      (activeMission?.missionType === 'waypoint' &&
+        !!activeMission.flightLines &&
+        activeMission.flightLines.length > 0 &&
+        activeMission.flightLines[0].coordinates.length > 0);
+
+    if (!hasEditableTarget) return;
     setKmlEditMode(true);
     setStatusMessage('Area edit mode enabled. Drag points on the map.');
     setTimeout(() => setStatusMessage(''), 3000);
@@ -342,7 +383,21 @@ export const FlightPlanner = () => {
   };
 
   const handleDeleteKML = () => {
-    if (!activeMissionId || !activeMission?.aoi) return;
+    if (!activeMissionId || !activeMission) return;
+
+    if (activeMission.missionType === 'waypoint') {
+      if (!confirm('Delete imported waypoints for this mission?')) return;
+
+      setKmlEditMode(false);
+      updateMission(activeMissionId, {
+        flightLines: [],
+      });
+      setStatusMessage('Waypoints deleted.');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    if (!activeMission.aoi) return;
     if (!confirm('Delete area for this mission?')) return;
 
     setKmlEditMode(false);
@@ -493,44 +548,49 @@ export const FlightPlanner = () => {
             <div className="status-message success">
               ✓ Area loaded: <strong>{activeMission.aoi.name}</strong>
             </div>
-            {activeMission.aoi && (
-              <div className="kml-toolbar" aria-label="KML toolbar">
-                <button
-                  className="kml-tool-btn kml-delete"
-                  onClick={handleDeleteKML}
-                  title="Delete Area"
-                >
-                  🗑️
-                </button>
-                <button
-                  className={`kml-tool-btn ${kmlEditMode ? 'active' : ''}`}
-                  onClick={handleStartKMLEdit}
-                  disabled={kmlEditMode}
-                  title="Edit Area"
-                >
-                  ✏️
-                </button>
-                <button
-                  className="kml-tool-btn kml-save"
-                  onClick={handleSaveKMLEdit}
-                  disabled={!kmlEditMode}
-                  title="Save Area"
-                >
-                  💾
-                </button>
-              </div>
-            )}
             <div className="aoi-actions">
-              <button className="btn-secondary" onClick={handleImportKML}>
-                📂 Replace with KML
+              <button className="btn-primary" onClick={handleImportKML}>
+                📂 Import Area Mission KML
               </button>
-              <button className="btn-secondary" onClick={handleImportWaypointKML}>
+              <button className="btn-primary" onClick={handleImportWaypointKML}>
                 📍 Import Waypoint KML
               </button>
-              <button className="btn-secondary" onClick={handleDrawAOI}>
-                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw New Area'}
+              <button className="btn-primary" onClick={handleDrawWaypoint}>
+                {drawWaypointMode ? '❌ Cancel Waypoint Draw' : '➕ Add Waypoint'}
+              </button>
+              <button className="btn-primary" onClick={handleDrawAOI}>
+                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw Mission Area'}
               </button>
             </div>
+            {activeMission.aoi && (
+              <div className="mission-tools-line" aria-label="KML toolbar">
+                <div className="kml-toolbar kml-toolbar-inline">
+                  <button
+                    className="kml-tool-btn kml-delete"
+                    onClick={handleDeleteKML}
+                    title="Delete Area"
+                  >
+                    🗑️
+                  </button>
+                  <button
+                    className={`kml-tool-btn ${kmlEditMode ? 'active' : ''}`}
+                    onClick={handleStartKMLEdit}
+                    disabled={kmlEditMode}
+                    title="Edit Area"
+                  >
+                    ✏️
+                  </button>
+                  <button
+                    className="kml-tool-btn kml-save"
+                    onClick={handleSaveKMLEdit}
+                    disabled={!kmlEditMode}
+                    title="Save Area"
+                  >
+                    💾
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="aoi-status">
@@ -545,15 +605,57 @@ export const FlightPlanner = () => {
             )}
             <div className="aoi-actions">
               <button className="btn-primary" onClick={handleImportKML}>
-                📂 Import KML/KMZ
+                📂 Import Area Mission KML
               </button>
               <button className="btn-primary" onClick={handleImportWaypointKML}>
                 📍 Import Waypoint KML
               </button>
+              <button className="btn-primary" onClick={handleDrawWaypoint}>
+                {drawWaypointMode ? '❌ Cancel Waypoint Draw' : '➕ Add Waypoint'}
+              </button>
               <button className="btn-primary" onClick={handleDrawAOI}>
-                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw on Map'}
+                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw Mission Area'}
               </button>
             </div>
+
+            {activeMission?.missionType === 'waypoint' && activeMission.flightLines.length > 0 && (
+              <div className="mission-tools-line" aria-label="Waypoint toolbar">
+                <div className="kml-toolbar kml-toolbar-inline">
+                  <button
+                    className="kml-tool-btn kml-delete"
+                    onClick={handleDeleteKML}
+                    title="Delete Waypoints"
+                  >
+                    🗑️
+                  </button>
+                  <button
+                    className={`kml-tool-btn ${kmlEditMode ? 'active' : ''}`}
+                    onClick={handleStartKMLEdit}
+                    disabled={kmlEditMode}
+                    title="Edit Waypoints"
+                  >
+                    ✏️
+                  </button>
+                  <button
+                    className="kml-tool-btn kml-save"
+                    onClick={handleSaveKMLEdit}
+                    disabled={!kmlEditMode}
+                    title="Save Waypoints"
+                  >
+                    💾
+                  </button>
+                </div>
+                <label className="inline-toggle waypoint-guide-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showWaypointHeightGuides}
+                    onChange={(e) => setShowWaypointHeightGuides(e.target.checked)}
+                    disabled={!kmlEditMode}
+                  />
+                  Height guides
+                </label>
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -631,6 +733,36 @@ export const FlightPlanner = () => {
                     waypointAutoGimbalYaw,
                   },
                 });
+
+                if (
+                  activeMission?.missionType === 'waypoint' &&
+                  activeMission.flightLines?.length > 0 &&
+                  activeMission.flightLines[0].coordinates.length > 0
+                ) {
+                  const firstLine = activeMission.flightLines[0];
+                  const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], newAltitude]);
+                  const viewer = getCesiumViewer();
+
+                  const applyWaypointAltitude = async () => {
+                    const updatedWaypoints = viewer
+                      ? await sampleTerrainForWaypoints(viewer, baseWaypoints, newAltitude)
+                      : baseWaypoints;
+
+                    updateMission(activeMissionId, {
+                      flightLines: [
+                        {
+                          ...firstLine,
+                          coordinates: updatedWaypoints,
+                        },
+                        ...activeMission.flightLines.slice(1),
+                      ],
+                    });
+                  };
+
+                  applyWaypointAltitude().catch((error) => {
+                    console.error('Failed to update waypoint altitude:', error);
+                  });
+                }
               }
             }}
             min="10"
