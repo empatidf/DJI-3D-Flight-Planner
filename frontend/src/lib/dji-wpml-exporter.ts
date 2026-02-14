@@ -7,6 +7,8 @@
 import JSZip from 'jszip';
 import type { Mission } from '../stores/mission-store';
 
+const WPML_NAMESPACE = 'http://www.dji.com/wpmz/1.0.0';
+
 interface WaypointData {
   lon: number;
   lat: number;
@@ -27,21 +29,30 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
   const allWaypoints: WaypointData[] = [];
   mission.flightLines.forEach(line => {
     line.coordinates.forEach(coord => {
-      allWaypoints.push({
-        lon: coord[0],
-        lat: coord[1],
-        alt: coord[2]
-      });
+      const lon = Number(coord[0]);
+      const lat = Number(coord[1]);
+      const rawAlt = Number(coord[2]);
+      const alt = Number.isFinite(rawAlt) ? rawAlt : mission.parameters.altitude;
+
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+        return;
+      }
+
+      allWaypoints.push({ lon, lat, alt });
     });
   });
 
-  // Create waylines.wpml (executable file) - at root level
-  const waylinesContent = generateWaylinesWPML(mission, allWaypoints);
-  zip.file('waylines.wpml', waylinesContent);
+  if (allWaypoints.length === 0) {
+    throw new Error('No valid waypoint coordinates to export');
+  }
 
-  // Create template.kml (for editing) - at root level
+  // DJI Pilot 2 expects files inside the wpmz folder in KMZ
+  const waylinesContent = generateWaylinesWPML(mission, allWaypoints);
+  zip.file('wpmz/waylines.wpml', waylinesContent);
+
+  // Create template.kml (for editing)
   const templateContent = generateTemplateKML(mission, allWaypoints);
-  zip.file('template.kml', templateContent);
+  zip.file('wpmz/template.kml', templateContent);
 
   // Generate KMZ file
   const kmzBlob = await zip.generateAsync({ 
@@ -57,17 +68,20 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
  */
 const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
-  
-  // Get drone enum values (default to M30 if not found)
-  const droneEnumValue = getDroneEnumValue(drone.name);
-  const droneSubEnumValue = getDroneSubEnumValue(drone.name);
-  const payloadEnumValue = getPayloadEnumValue(camera.name);
+  const droneInfo = resolveDroneInfo(drone.name);
+  const payloadInfo = resolvePayloadInfo(camera.name, camera.id, droneInfo.droneEnumValue);
 
-  // Use first waypoint as takeoff reference
-  const takeoffPoint = waypoints[0];
+  const droneSubEnumTag =
+    droneInfo.droneSubEnumValue !== undefined
+      ? `\n      <wpml:droneSubEnumValue>${droneInfo.droneSubEnumValue}</wpml:droneSubEnumValue>`
+      : '';
+  const payloadSubEnumTag =
+    payloadInfo.payloadSubEnumValue !== undefined
+      ? `\n      <wpml:payloadSubEnumValue>${payloadInfo.payloadSubEnumValue}</wpml:payloadSubEnumValue>`
+      : '';
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.6">
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NAMESPACE}">
 <Document>
   <wpml:missionConfig>
     <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
@@ -75,16 +89,12 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
     <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
-    <wpml:takeOffRefPoint>${takeoffPoint.lat.toFixed(8)},${takeoffPoint.lon.toFixed(8)},${takeoffPoint.alt.toFixed(2)}</wpml:takeOffRefPoint>
-    <wpml:takeOffRefPointAGLHeight>${parameters.altitude}</wpml:takeOffRefPointAGLHeight>
     <wpml:globalTransitionalSpeed>${parameters.speed}</wpml:globalTransitionalSpeed>
-    <wpml:globalRTHHeight>100</wpml:globalRTHHeight>
     <wpml:droneInfo>
-      <wpml:droneEnumValue>${droneEnumValue}</wpml:droneEnumValue>
-      <wpml:droneSubEnumValue>${droneSubEnumValue}</wpml:droneSubEnumValue>
+      <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
     <wpml:payloadInfo>
-      <wpml:payloadEnumValue>${payloadEnumValue}</wpml:payloadEnumValue>
+      <wpml:payloadEnumValue>${payloadInfo.payloadEnumValue}</wpml:payloadEnumValue>${payloadSubEnumTag}
       <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
     </wpml:payloadInfo>
   </wpml:missionConfig>
@@ -113,16 +123,21 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
 const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
   const timestamp = Date.now();
-  
-  const droneEnumValue = getDroneEnumValue(drone.name);
-  const droneSubEnumValue = getDroneSubEnumValue(drone.name);
-  const payloadEnumValue = getPayloadEnumValue(camera.name);
 
-  // Use first waypoint as takeoff reference
-  const takeoffPoint = waypoints[0];
+  const droneInfo = resolveDroneInfo(drone.name);
+  const payloadInfo = resolvePayloadInfo(camera.name, camera.id, droneInfo.droneEnumValue);
+
+  const droneSubEnumTag =
+    droneInfo.droneSubEnumValue !== undefined
+      ? `\n      <wpml:droneSubEnumValue>${droneInfo.droneSubEnumValue}</wpml:droneSubEnumValue>`
+      : '';
+  const payloadSubEnumTag =
+    payloadInfo.payloadSubEnumValue !== undefined
+      ? `\n      <wpml:payloadSubEnumValue>${payloadInfo.payloadSubEnumValue}</wpml:payloadSubEnumValue>`
+      : '';
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.6">
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NAMESPACE}">
 <Document>
   <wpml:author>3D Flight Planner</wpml:author>
   <wpml:createTime>${timestamp}</wpml:createTime>
@@ -133,15 +148,12 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
     <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
-    <wpml:takeOffRefPoint>${takeoffPoint.lat.toFixed(8)},${takeoffPoint.lon.toFixed(8)},${takeoffPoint.alt.toFixed(2)}</wpml:takeOffRefPoint>
-    <wpml:takeOffRefPointAGLHeight>${parameters.altitude}</wpml:takeOffRefPointAGLHeight>
     <wpml:globalTransitionalSpeed>${parameters.speed}</wpml:globalTransitionalSpeed>
     <wpml:droneInfo>
-      <wpml:droneEnumValue>${droneEnumValue}</wpml:droneEnumValue>
-      <wpml:droneSubEnumValue>${droneSubEnumValue}</wpml:droneSubEnumValue>
+      <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
     <wpml:payloadInfo>
-      <wpml:payloadEnumValue>${payloadEnumValue}</wpml:payloadEnumValue>
+      <wpml:payloadEnumValue>${payloadInfo.payloadEnumValue}</wpml:payloadEnumValue>${payloadSubEnumTag}
       <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
     </wpml:payloadInfo>
   </wpml:missionConfig>
@@ -155,11 +167,15 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     </wpml:waylineCoordinateSysParam>
     <wpml:autoFlightSpeed>${parameters.speed}</wpml:autoFlightSpeed>
     <wpml:globalHeight>${parameters.altitude}</wpml:globalHeight>
+    <wpml:caliFlightEnable>0</wpml:caliFlightEnable>
     <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>
     <wpml:globalWaypointHeadingParam>
       <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
+      <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+      <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
     </wpml:globalWaypointHeadingParam>
     <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
+    <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
     <wpml:payloadParam>
       <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
       <wpml:imageFormat>wide</wpml:imageFormat>
@@ -195,11 +211,15 @@ const generateWaypointXML = (
       <wpml:waypointSpeed>${parameters.speed}</wpml:waypointSpeed>
       <wpml:waypointHeadingParam>
         <wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>
+        <wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>
+        <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
       </wpml:waypointHeadingParam>
       <wpml:waypointTurnParam>
         <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
+        <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
+      <wpml:useStraightLine>1</wpml:useStraightLine>
       <wpml:actionGroup>
         <wpml:actionGroupId>${index}</wpml:actionGroupId>
         <wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex>
@@ -212,7 +232,7 @@ const generateWaypointXML = (
           <wpml:actionId>0</wpml:actionId>
           <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
-            <wpml:gimbalHeadingYawBase>north</wpml:gimbalHeadingYawBase>
+            <wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase>
             <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
             <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
             <wpml:gimbalPitchRotateAngle>${parameters.gimbalPitch}</wpml:gimbalPitchRotateAngle>
@@ -231,8 +251,6 @@ const generateWaypointXML = (
           <wpml:actionActuatorFuncParam>
             <wpml:fileSuffix>point${index}</wpml:fileSuffix>
             <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
-            <wpml:payloadLensIndex>wide</wpml:payloadLensIndex>
-            <wpml:useGlobalPayloadLensIndex>0</wpml:useGlobalPayloadLensIndex>
           </wpml:actionActuatorFuncParam>
         </wpml:action>
       </wpml:actionGroup>
@@ -265,75 +283,113 @@ const generateTemplateWaypointXML = (
 };
 
 /**
- * Get DJI drone enum value
+ * Resolve DJI drone enum/sub-enum values from display name
  */
-const getDroneEnumValue = (droneName: string): number => {
-  const droneMap: { [key: string]: number } = {
-    'mavic 3 enterprise': 77,
-    'mavic 3e': 77,
-    'mavic 3t': 77,
-    'mavic 3m': 77,
-    'matrice 30': 67,
-    'matrice 30t': 67,
-    'matrice 300 rtk': 60,
-    'matrice 350 rtk': 89,
-    'matrice 3d': 91,
-    'matrice 3td': 91,
-  };
-  
-  const normalizedName = droneName.toLowerCase();
-  return droneMap[normalizedName] || 67; // Default to M30
+const resolveDroneInfo = (droneName: string): { droneEnumValue: number; droneSubEnumValue?: number } => {
+  const normalized = droneName.toLowerCase().replace(/dji\s+/g, '').trim();
+
+  if (normalized.includes('matrice 350')) return { droneEnumValue: 89 };
+  if (normalized.includes('matrice 300')) return { droneEnumValue: 60 };
+
+  if (normalized.includes('matrice 30t') || /\bm30t\b/.test(normalized)) {
+    return { droneEnumValue: 67, droneSubEnumValue: 1 };
+  }
+  if (normalized.includes('matrice 30') || /\bm30\b/.test(normalized)) {
+    return { droneEnumValue: 67, droneSubEnumValue: 0 };
+  }
+
+  if (normalized.includes('matrice 3td') || /\bm3td\b/.test(normalized)) {
+    return { droneEnumValue: 91, droneSubEnumValue: 1 };
+  }
+  if (normalized.includes('matrice 3d') || /\bm3d\b/.test(normalized)) {
+    return { droneEnumValue: 91, droneSubEnumValue: 0 };
+  }
+
+  if (normalized.includes('mavic 3t') || /\bm3t\b/.test(normalized)) {
+    return { droneEnumValue: 77, droneSubEnumValue: 1 };
+  }
+  if (normalized.includes('mavic 3m') || /\bm3m\b/.test(normalized)) {
+    return { droneEnumValue: 77, droneSubEnumValue: 2 };
+  }
+  if (
+    normalized.includes('mavic 3e') ||
+    normalized.includes('mavic 3 enterprise') ||
+    /\bm3e\b/.test(normalized)
+  ) {
+    return { droneEnumValue: 77, droneSubEnumValue: 0 };
+  }
+
+  return { droneEnumValue: 77, droneSubEnumValue: 0 };
 };
 
 /**
- * Get DJI drone sub enum value based on specific model variant
+ * Resolve DJI payload enum/sub-enum values from camera id/name
  */
-const getDroneSubEnumValue = (droneName: string): number => {
-  const normalizedName = droneName.toLowerCase();
-  
-  // M30/M30T variants (droneEnumValue 67)
-  if (normalizedName.includes('m30t') || normalizedName.includes('matrice 30t')) return 1;
-  if (normalizedName.includes('m30') || normalizedName.includes('matrice 30')) return 0;
-  
-  // M3E/M3T/M3M variants (droneEnumValue 77)
-  if (normalizedName.includes('m3t') || normalizedName.includes('mavic 3t')) return 1;
-  if (normalizedName.includes('m3m') || normalizedName.includes('mavic 3m')) return 2;
-  if (normalizedName.includes('m3e') || normalizedName.includes('mavic 3e') || normalizedName.includes('mavic 3 enterprise')) return 0;
-  
-  // M3D/M3TD variants (droneEnumValue 91)
-  if (normalizedName.includes('m3td') || normalizedName.includes('matrice 3td')) return 1;
-  if (normalizedName.includes('m3d') || normalizedName.includes('matrice 3d')) return 0;
-  
-  return 0; // Default to base model
-};
+const resolvePayloadInfo = (
+  cameraName: string,
+  cameraId?: string,
+  droneEnumValue?: number
+): { payloadEnumValue: number; payloadSubEnumValue?: number } => {
+  const normalizedName = cameraName.toLowerCase().replace(/dji\s+/g, '').trim();
+  const normalizedId = (cameraId || '').toLowerCase();
 
-/**
- * Get DJI payload enum value
- */
-const getPayloadEnumValue = (cameraName: string): number => {
-  const cameraMap: { [key: string]: number } = {
-    'l2': 50277,
-    'h20': 42,
-    'h20t': 43,
-    'h20n': 61,
-    'h30': 82,
-    'h30t': 83,
-    'm30': 52,
-    'm30t': 53,
-    'm3e': 66,  // Mavic 3E Camera
-    'mavic3e': 66,
-    'm3t': 67,  // Mavic 3T Camera
-    'mavic3t': 67,
-    'm3m': 68,  // Mavic 3M Camera
-    'mavic3m': 68,
-    'm3d': 80,  // Matrice 3D Camera
-    'matrice3d': 80,
-    'm3td': 81,  // Matrice 3TD Camera
-    'matrice3td': 81,
-  };
-  
-  const normalizedName = cameraName.toLowerCase().replace(/\s+/g, '');
-  return cameraMap[normalizedName] || 52; // Default to M30 camera
+  if (normalizedId.includes('p1') || normalizedName.includes('p1')) {
+    return { payloadEnumValue: 50, payloadSubEnumValue: 2 };
+  }
+
+  if (normalizedId.includes('l2') || normalizedName.includes('l2')) {
+    return { payloadEnumValue: 50, payloadSubEnumValue: 2 };
+  }
+
+  if (normalizedName.includes('h30t')) return { payloadEnumValue: 83 };
+  if (normalizedName.includes('h30')) return { payloadEnumValue: 82 };
+  if (normalizedName.includes('h20n')) return { payloadEnumValue: 61 };
+  if (normalizedName.includes('h20t')) return { payloadEnumValue: 43 };
+  if (normalizedName.includes('h20')) return { payloadEnumValue: 42 };
+
+  if (normalizedName.includes('m30t')) return { payloadEnumValue: 53 };
+  if (normalizedName.includes('m30')) return { payloadEnumValue: 52 };
+
+  if (normalizedName.includes('m3td') || normalizedName.includes('matrice 3td')) {
+    return { payloadEnumValue: 81, payloadSubEnumValue: 0 };
+  }
+  if (normalizedName.includes('m3d') || normalizedName.includes('matrice 3d')) {
+    return { payloadEnumValue: 80, payloadSubEnumValue: 0 };
+  }
+
+  if (normalizedName.includes('m3m') || normalizedName.includes('mavic 3m')) {
+    return { payloadEnumValue: 68, payloadSubEnumValue: 0 };
+  }
+  if (normalizedName.includes('m3t') || normalizedName.includes('mavic 3t')) {
+    return { payloadEnumValue: 67, payloadSubEnumValue: 0 };
+  }
+  if (
+    normalizedName.includes('m3e') ||
+    normalizedName.includes('mavic 3e') ||
+    normalizedName.includes('mavic 3 enterprise') ||
+    normalizedName.includes('wide camera') ||
+    normalizedName.includes('zoom camera')
+  ) {
+    return { payloadEnumValue: 66, payloadSubEnumValue: 0 };
+  }
+
+  if (droneEnumValue === 60 || droneEnumValue === 89) {
+    return { payloadEnumValue: 50, payloadSubEnumValue: 2 };
+  }
+
+  if (droneEnumValue === 67) {
+    return { payloadEnumValue: 52 };
+  }
+
+  if (droneEnumValue === 77) {
+    return { payloadEnumValue: 66, payloadSubEnumValue: 0 };
+  }
+
+  if (droneEnumValue === 91) {
+    return { payloadEnumValue: 80, payloadSubEnumValue: 0 };
+  }
+
+  return { payloadEnumValue: 66, payloadSubEnumValue: 0 };
 };
 
 /**
