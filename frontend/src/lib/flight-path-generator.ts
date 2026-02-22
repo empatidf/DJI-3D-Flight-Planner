@@ -192,118 +192,132 @@ export const generateFlightLines = (
   speed: number
 ): FlightPlan => {
   console.log('generateFlightLines called with:', { polygon: polygon.length + ' coords', lineSpacing, flightAngle, altitude, photoInterval, speed });
-  
+
   if (polygon.length < 3) {
     throw new Error('Polygon must have at least 3 points');
   }
-  
-  // Calculate bounding box
-  const [minLon, minLat, maxLon, maxLat] = calculateBBox(polygon);
-  const center: [number, number] = [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
 
-  // UI/input convention: 0° = North, 90° = East (clockwise from North)
-  // Internal 2D rotation convention here: 0° = +X/East (counterclockwise-positive)
-  // Convert so flightDirection behaves as labeled in UI.
+  // ── Reference point: polygon lon/lat centroid ───────────────────────────
+  const [minLon, minLat, maxLon, maxLat] = calculateBBox(polygon);
+  const centerLon = (minLon + maxLon) / 2;
+  const centerLat = (minLat + maxLat) / 2;
+
+  // ── Metric scale factors at the reference latitude ───────────────────────
+  // Longitude and latitude degrees represent different real-world distances,
+  // especially pronounced at high latitudes (e.g. 1° lon ≈ 69 km at 51°N vs
+  // 1° lat ≈ 111 km). All geometry must be done in metres, not in raw degrees.
+  const latRad = (centerLat * Math.PI) / 180;
+  const M_PER_DEG_LAT = 111320;                          // metres per degree latitude
+  const M_PER_DEG_LON = 111320 * Math.cos(latRad);       // metres per degree longitude
+
+  // ── Convert polygon to local East-North metric frame (metres from centre) ─
+  const metricPolygon = polygon.map(
+    ([lon, lat]): [number, number] => [
+      (lon - centerLon) * M_PER_DEG_LON,   // East  (x)
+      (lat - centerLat) * M_PER_DEG_LAT,   // North (y)
+    ]
+  );
+
+  // ── Flight-angle convention ──────────────────────────────────────────────
+  // UI: 0° = North, 90° = East (clockwise from North)
+  // Math: 0° = +X (East), angles counterclockwise-positive
   const normalizedFlightAngle = ((flightAngle % 360) + 360) % 360;
   const mathAngle = 90 - normalizedFlightAngle;
-  
-  console.log('Bounding box:', { minLon, minLat, maxLon, maxLat, center });
-  
-  // Rotate everything to align with flight angle
-  const rotatedPolygon = polygon.map((point) =>
-    rotatePoint([point[0], point[1]], center, -mathAngle)
-  );
-  
-  const [rotMinLon, rotMinLat, rotMaxLon, rotMaxLat] = calculateBBox(rotatedPolygon);
-  
-  // Calculate number of lines needed
-  const scanHeight = rotMaxLat - rotMinLat;
-  
-  // Convert line spacing from meters to degrees (approximate at this latitude)
-  const metersPerDegree = 111320 * Math.cos((center[1] * Math.PI) / 180);
-  const lineSpacingDegrees = lineSpacing / metersPerDegree;
-  
-  const numLines = Math.ceil(scanHeight / lineSpacingDegrees) + 1;
-  
-  console.log('Line calculation:', { scanHeight, metersPerDegree, lineSpacingDegrees, numLines });
-  
+
+  // ── Rotate metric polygon to align with flight direction ─────────────────
+  // In the rotated frame, flight lines run along X and are swept along Y.
+  const ZERO: [number, number] = [0, 0];
+  const rotatedMetric = metricPolygon.map((pt) => rotatePoint(pt, ZERO, -mathAngle));
+
+  const [rxMin, ryMin, rxMax, ryMax] = calculateBBox(rotatedMetric);
+
+  // ── Number of parallel lines to cover the scan extent ────────────────────
+  const scanHeight = ryMax - ryMin;   // metres in cross-track direction
+  const numLines = Math.ceil(scanHeight / lineSpacing) + 1;
+
+  console.log('Line calculation (metric):', { scanHeight, lineSpacing, numLines });
+
   const lines: FlightLine[] = [];
   let totalDistance = 0;
   let totalWaypoints = 0;
   let totalPhotos = 0;
   let waypointIndex = 0;
-  
-  console.log(`Generating ${numLines} flight lines...`);
-  
-  // Generate parallel lines
+
+  // Boundary nudge (metres): prevents scan lines that coincide exactly with a
+  // polygon edge from being silently discarded by the ray-cast clipper.
+  const BOUNDARY_NUDGE = lineSpacing * 0.001;
+
   for (let i = 0; i < numLines; i++) {
-    const y = rotMinLat + i * lineSpacingDegrees;
-    
-    // Create line segment
-    const lineStart: [number, number] = [rotMinLon - 0.001, y];
-    const lineEnd: [number, number] = [rotMaxLon + 0.001, y];
-    
-    // Clip to polygon
-    const clippedPoints = clipLineToPolygon(lineStart, lineEnd, rotatedPolygon);
-    
-    if (i < 2) {
-      console.log(`Line ${i}: start=${lineStart}, end=${lineEnd}, clipped=${clippedPoints.length} points`, clippedPoints);
+    let y = ryMin + i * lineSpacing;
+
+    // Nudge lines that land exactly on the top/bottom boundary inward.
+    // This prevents scan lines from being placed at a polygon vertex (corner),
+    // which would cause clipLineToPolygon to return a degenerate zero-length
+    // segment whose endpoint is the polygon corner — appearing as the "S" marker.
+    if (Math.abs(y - ryMax) < BOUNDARY_NUDGE) {
+      y = ryMax - BOUNDARY_NUDGE;
+    } else if (Math.abs(y - ryMin) < BOUNDARY_NUDGE) {
+      y = ryMin + BOUNDARY_NUDGE;
     }
-    
-    if (clippedPoints.length < 2) continue;
-    
-    // Rotate back to original orientation
-    let [start, end] = clippedPoints.map((point) =>
-      rotatePoint(point, center, mathAngle)
-    );
-    
-    // Alternate direction for serpentine pattern
-    if (i % 2 === 1) {
-      [start, end] = [end, start];
+
+    // Horizontal scan line extending well beyond the polygon in X (metres)
+    const lineStart: [number, number] = [rxMin - 500, y];
+    const lineEnd:   [number, number] = [rxMax + 500, y];
+
+    const clipped = clipLineToPolygon(lineStart, lineEnd, rotatedMetric);
+
+    if (clipped.length < 2) continue;
+
+    // Rotate back to metric East-North frame
+    let [startM, endM] = clipped.map((pt) => rotatePoint(pt, ZERO, mathAngle));
+
+    // Serpentine (alternate direction)
+    if (lines.length % 2 === 1) {
+      [startM, endM] = [endM, startM];
     }
-    
-    // Calculate line length
-    const lineLength = calculateDistance(start, end);
-    
-    // Generate waypoints along the line
+
+    // ── Line length in metres ─────────────────────────────────────────────
+    const dx = endM[0] - startM[0];
+    const dy = endM[1] - startM[1];
+    const lineLength = Math.sqrt(dx * dx + dy * dy);
+
+    // Skip degenerate lines (clipping at a polygon vertex yields zero-length).
+    if (lineLength < 1) continue;
+
+    // ── Convert endpoints back to lon/lat ─────────────────────────────────
+    const toLonLat = (pt: [number, number]): [number, number] => [
+      centerLon + pt[0] / M_PER_DEG_LON,
+      centerLat + pt[1] / M_PER_DEG_LAT,
+    ];
+    const startLL = toLonLat(startM);
+    const endLL   = toLonLat(endM);
+
+    // ── Waypoints along the line ──────────────────────────────────────────
     const waypoints: Waypoint[] = [];
-    const photoDistance = speed * photoInterval; // meters between photos
+    const photoDistance = speed * photoInterval;   // metres between photos
     const numPhotos = Math.ceil(lineLength / photoDistance);
-    
+
     for (let j = 0; j <= numPhotos; j++) {
       const t = j / numPhotos;
-      const lon = start[0] + t * (end[0] - start[0]);
-      const lat = start[1] + t * (end[1] - start[1]);
-      
       waypoints.push({
-        lon,
-        lat,
-        alt: altitude,
+        lon:   startLL[0] + t * (endLL[0] - startLL[0]),
+        lat:   startLL[1] + t * (endLL[1] - startLL[1]),
+        alt:   altitude,
         index: waypointIndex++,
         action: j < numPhotos ? 'photo' : undefined,
         speed,
       });
     }
-    
-    lines.push({
-      id: `line-${i}`,
-      waypoints,
-      length: lineLength,
-    });
-    
-    totalDistance += lineLength;
-    totalWaypoints += waypoints.length;
-    totalPhotos += numPhotos;
+
+    lines.push({ id: `line-${i}`, waypoints, length: lineLength });
+    totalDistance   += lineLength;
+    totalWaypoints  += waypoints.length;
+    totalPhotos     += numPhotos;
   }
-  
+
   console.log(`Generated ${lines.length} lines with ${totalWaypoints} waypoints and ${totalPhotos} photos`);
-  
-  return {
-    lines,
-    totalDistance,
-    numWaypoints: totalWaypoints,
-    numPhotos: totalPhotos,
-  };
+
+  return { lines, totalDistance, numWaypoints: totalWaypoints, numPhotos: totalPhotos };
 };
 
 /**

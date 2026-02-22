@@ -60,6 +60,10 @@ export const FlightPlanner = () => {
   const realtimePreviewRequestRef = useRef<number>(0);
 
   const buildTerrainAdjustedAreaPlan = async (aoiCoordinates: number[][]) => {
+    // Camera orientation convention (image top = flight direction):
+    //   sensorWidth  (long/wide axis) → left-right in image → CROSS-TRACK → line spacing (side overlap)
+    //   sensorHeight (short axis)     → top-bottom in image → ALONG-TRACK → photo interval (forward overlap)
+    // Example: flying North at 0° → wide axis faces East-West, short axis faces North-South.
     const footprintWidth = (selectedCamera.sensorWidth * altitude) / selectedCamera.focalLength;
     const footprintHeight = (selectedCamera.sensorHeight * altitude) / selectedCamera.focalLength;
     const lineSpacing = footprintWidth * (1 - sideOverlap / 100);

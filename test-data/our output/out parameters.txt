@@ -1,0 +1,46 @@
+ensor: 17.3×13mm | Resolution: 5280×3956px | Focal: 12.29mm
+3. Common Flight Parameters
+Altitude (m AGL):
+80
+
+Flight Speed (m/s):
+6
+
+Forward Overlap (%):
+80
+
+Side Overlap (%):
+20
+
+Flight Direction (°):
+90
+
+
+Mission Realtime Update
+Enable by importing waypoint KML
+Calculated Results
+GSD:
+2.13 cm/px
+Photo Interval:
+2.8 sec
+Line Spacing:
+90.1 m
+Footprint:
+112.6×84.6 m
+Blur Factor:
+0.14 px
+Max Safe Speed:
+21.3 m/s
+Est. Photos:
+40
+Est. Flight Time:
+2.3 min
+📋 Flight Plan Summary
+Flight Lines:
+4
+Photo Points:
+41
+Total Waypoints:
+45
+Mission Status:
+✓ Ready to Export

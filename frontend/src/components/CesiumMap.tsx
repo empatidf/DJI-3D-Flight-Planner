@@ -1811,8 +1811,11 @@ export const CesiumMap = () => {
         return;
       }
 
-      const firstLineRef = drawableLines[0];
-      const lastLineRef = drawableLines[drawableLines.length - 1];
+      // For start/end markers only use lines that have ≥2 coords (actual flight lines).
+      // A line with just 1 coord is a stale or orphan entry and must not become the "S" marker.
+      const flightLineRefs = drawableLines.filter(({ safeCoordinates }) => safeCoordinates.length >= 2);
+      const firstLineRef = flightLineRefs[0] ?? drawableLines[0];
+      const lastLineRef  = flightLineRefs[flightLineRefs.length - 1] ?? drawableLines[drawableLines.length - 1];
       const firstMissionCoord = firstLineRef.safeCoordinates[0];
       const firstWaypointRef = {
         lineIndex: firstLineRef.lineIndex,
