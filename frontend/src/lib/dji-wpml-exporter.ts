@@ -211,7 +211,7 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
       <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
       <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
     </wpml:globalWaypointHeadingParam>
-    <wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>
+    <wpml:globalWaypointTurnMode>coordinateTurn</wpml:globalWaypointTurnMode>
     <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
     <wpml:payloadParam>
       <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
@@ -244,6 +244,10 @@ const generateWaypointXML = (
   const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
   const useAutoGimbalYaw = parameters.waypointAutoGimbalYaw ?? true;
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
+  // Coordinated-turn damping distance: how far before the waypoint the aircraft
+  // starts turning. Scales with speed so the turn arc fits between waypoints.
+  const speed = parseWpmlFloat(parameters.speed, 8);
+  const dampingDist = formatWpmlFloat(Math.min(10, Math.max(0.5, speed * 0.5)), 2, 1);
 
   const actions: string[] = [];
   let actionId = 0;
@@ -321,8 +325,8 @@ const generateWaypointXML = (
         <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
       </wpml:waypointHeadingParam>
       <wpml:waypointTurnParam>
-        <wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>
-        <wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>
+        <wpml:waypointTurnMode>coordinateTurn</wpml:waypointTurnMode>
+        <wpml:waypointTurnDampingDist>${dampingDist}</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
         <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
       <wpml:useStraightLine>1</wpml:useStraightLine>
