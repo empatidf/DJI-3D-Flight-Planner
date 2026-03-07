@@ -28,6 +28,7 @@ import {
   IonGeocoderService,
   Cesium3DTileset,
   Cesium3DTileStyle,
+  HeightReference,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
@@ -1490,7 +1491,10 @@ export const CesiumMap = () => {
 
     if (!activeMission) return;
 
-    const drawAltitude = Number.isFinite(activeMission.parameters.altitude)
+    // Draw at ground level (altitude 0) so the user can click precise locations.
+    // The mission altitude is applied only after the user finishes drawing (right-click).
+    const drawAltitude = 0;
+    const missionAltitude = Number.isFinite(activeMission.parameters.altitude)
       ? activeMission.parameters.altitude
       : 100;
     drawPointsRef.current = [];
@@ -1507,8 +1511,7 @@ export const CesiumMap = () => {
         }, false),
         width: 3,
         material: Color.YELLOW,
-        clampToGround: false,
-        arcType: 0,
+        clampToGround: true,
       },
     });
 
@@ -1518,12 +1521,13 @@ export const CesiumMap = () => {
     const addDrawPointEntity = (coord: number[], index: number) => {
       const entity = viewer.entities.add({
         id: `draw-waypoint-point-${activeMissionId}-${index}`,
-        position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+        position: Cartesian3.fromDegrees(coord[0], coord[1]),
         point: {
           pixelSize: 10,
           color: Color.YELLOW,
           outlineColor: Color.WHITE,
           outlineWidth: 2,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       });
@@ -1563,7 +1567,8 @@ export const CesiumMap = () => {
       const points = drawPointsRef.current;
       if (points.length < 2) return;
 
-      const terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, points, drawAltitude);
+      // Now apply the mission altitude to the drawn ground-level points
+      const terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, points, missionAltitude);
 
       updateMission(activeMissionId, {
         missionType: 'waypoint',

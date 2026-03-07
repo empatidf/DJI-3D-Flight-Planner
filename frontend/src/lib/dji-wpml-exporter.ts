@@ -100,6 +100,8 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
 const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
+  // globalTransitionalSpeed: speed flying TO first waypoint. DJI valid range [1, 15] m/s.
+  const transitionalSpeed = formatWpmlFloat(Math.min(15, Math.max(1, parseWpmlFloat(parameters.speed, 8))), 8, 2);
   const droneInfo = resolveDroneInfo(drone.name);
   const payloadInfo = resolvePayloadInfo(camera.name, camera.id, droneInfo.droneEnumValue);
 
@@ -121,7 +123,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
     <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
-    <wpml:globalTransitionalSpeed>${speedValue}</wpml:globalTransitionalSpeed>
+    <wpml:globalTransitionalSpeed>${transitionalSpeed}</wpml:globalTransitionalSpeed>
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
@@ -155,6 +157,8 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
 const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
+  // globalTransitionalSpeed: speed flying TO first waypoint. DJI valid range [1, 15] m/s.
+  const transitionalSpeed = formatWpmlFloat(Math.min(15, Math.max(1, parseWpmlFloat(parameters.speed, 8))), 8, 2);
   const altitudeValue = formatWpmlFloat(parameters.altitude, 100, 2);
   const timestamp = Date.now();
 
@@ -185,7 +189,7 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
     <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
-    <wpml:globalTransitionalSpeed>${speedValue}</wpml:globalTransitionalSpeed>
+    <wpml:globalTransitionalSpeed>${transitionalSpeed}</wpml:globalTransitionalSpeed>
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
@@ -352,6 +356,10 @@ const generateTemplateWaypointXML = (
   index: number,
   parameters: any
 ): string => {
+  const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
+  const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
+  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
+
   return `    <Placemark>
       <Point>
         <coordinates>${waypoint.lon.toFixed(8)},${waypoint.lat.toFixed(8)}</coordinates>
@@ -359,12 +367,17 @@ const generateTemplateWaypointXML = (
       <wpml:index>${index}</wpml:index>
       <wpml:ellipsoidHeight>${waypoint.alt.toFixed(2)}</wpml:ellipsoidHeight>
       <wpml:height>${waypoint.alt.toFixed(2)}</wpml:height>
+      <wpml:waypointSpeed>${speedValue}</wpml:waypointSpeed>
+      <wpml:waypointHeadingParam>
+        <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
+        <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
+        <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
+      </wpml:waypointHeadingParam>
+      <wpml:waypointTurnParam>
+        <wpml:waypointTurnMode>coordinateTurn</wpml:waypointTurnMode>
+      </wpml:waypointTurnParam>
       <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
-      <wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>
-      <wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>
-      <wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>
-      <wpml:gimbalPitchAngle>${parameters.gimbalPitch}</wpml:gimbalPitchAngle>
-      <wpml:gimbalYawAngle>${(parameters.waypointAutoGimbalYaw ?? true) ? 0 : (parameters.gimbalYaw ?? 0)}</wpml:gimbalYawAngle>
+      <wpml:useStraightLine>1</wpml:useStraightLine>
     </Placemark>
 `;
 };
