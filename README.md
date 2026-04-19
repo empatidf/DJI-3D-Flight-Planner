@@ -295,22 +295,21 @@ Inside `frontend/package.json`:
 
 ---
 
-## Documentation References
+## Documentation
 
-- `QUICKSTART.md` for fast onboarding
-- `IMPLEMENTATION.md` for implementation details
-- `dji-kmz-help-document/` for DJI/KML/WPML references
+- [QUICKSTART.md](QUICKSTART.md) — Get up and running in 5 minutes
+- [IMPLEMENTATION.md](IMPLEMENTATION.md) — Technical architecture and module details
 
 ---
 
 ## Current Status
 
-Active development with stable core mission workflow:
+Actively maintained. Core mission workflow is stable and production-ready:
 
-- mission + layer management
-- AOI/waypoint import and draw/edit
-- Cesium Ion terrain/imagery integration
-- DJI export pipeline
-- responsive operator-focused UI
-
-If you want, next step can be adding screenshots/GIF sections to this README for each workflow step.
+- Multi-mission and layer management
+- AOI and waypoint import, draw, and edit
+- Cesium Ion terrain, imagery, and 3D Tiles integration
+- Real-time photogrammetry calculations
+- DJI Pilot 2 KMZ/WPML export
+- Terrain-aware AGL flight planning
+- Responsive, operator-focused UI
