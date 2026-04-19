@@ -166,6 +166,21 @@ const sonyILXLR1_100mmCamera: CameraSpec = {
   imageFormat: ['JPEG', 'RAW'],
 };
 
+// PhaseOne P3 GS120 with 80mm AF lens
+const phaseoneP3GS120_80mmCamera: CameraSpec = {
+  id: 'phaseone-p3-gs120-80mm',
+  name: 'PhaseOne P3 GS120 80mm AF',
+  sensorWidth: 53.4,
+  sensorHeight: 40.0,
+  imageWidth: 12896,
+  imageHeight: 9648,
+  focalLength: 80.0,
+  pixelPitch: 4.14,
+  aperture: 'f/5.6',
+  shutterSpeed: 1 / 2500,
+  imageFormat: ['JPEG', 'IIQ'],
+};
+
 // DJI Mavic 3 Enterprise Drone
 export const mavic3eDrone: DroneSpec = {
   id: 'mavic3e',
@@ -186,7 +201,7 @@ export const matrice300Drone: DroneSpec = {
   id: 'm300-rtk',
   name: 'DJI Matrice 300 RTK',
   manufacturer: 'DJI',
-  cameras: [p1_35mmCamera, p1_50mmCamera, l2LidarCamera],
+  cameras: [p1_35mmCamera, p1_50mmCamera, l2LidarCamera, phaseoneP3GS120_80mmCamera],
   maxSpeed: 23, // m/s
   cruiseSpeed: 12, // m/s (recommended for mapping)
   maxAltitude: 500, // meters

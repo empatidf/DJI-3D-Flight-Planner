@@ -1401,12 +1401,11 @@ export const CesiumMap = () => {
           const points = drawPointsRef.current;
           const hover = drawHoverRef.current;
           const path = hover ? [...points, hover] : points;
-          return path.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1], coord[2]));
+          return path.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1]));
         }, false),
         width: 3,
         material: Color.CYAN,
-        clampToGround: false,
-        arcType: 0,
+        clampToGround: true,
       },
     });
 
@@ -1416,12 +1415,13 @@ export const CesiumMap = () => {
     const addDrawPointEntity = (coord: number[], index: number) => {
       const entity = viewer.entities.add({
         id: `draw-aoi-point-${activeMissionId}-${index}`,
-        position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+        position: Cartesian3.fromDegrees(coord[0], coord[1]),
         point: {
           pixelSize: 10,
           color: Color.YELLOW,
           outlineColor: Color.WHITE,
           outlineWidth: 2,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       });
