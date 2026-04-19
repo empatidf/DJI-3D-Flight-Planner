@@ -1,202 +1,256 @@
-# 3D Planer (Cesium DJI Mission Planner)
+# DJI 3D Flight Planner
 
-Web-based mission planning tool for DJI workflows using Cesium.  
-You can create and manage multiple missions, import KML/KMZ, draw/edit mission geometry, add Cesium Ion terrain/imagery layers, preview flight lines, and export DJI-compatible KMZ/WPML.
-
----
-
-## Highlights
-
-- Cesium map with search bar (address + coordinate search)
-- Mission manager with multi-mission visibility and fast mission focus
-- Layer manager with Cesium Ion token support
-  - Terrain assets
-  - Imagery assets
-  - 3D Tiles assets
-- 2D / 3D / Columbus view mode switching
-- AOI workflows
-  - Import area KML/KMZ
-  - Draw mission area interactively
-  - Edit area vertices on map
-- Waypoint workflows
-  - Import waypoint KML/KMZ
-  - Draw waypoint mission interactively
-  - Edit waypoint points on map
-- Photogrammetry calculations
-  - GSD, footprint, spacing, overlap effects, speed/blur metrics
-- Terrain-aware waypoint sampling for AGL-based planning
-- DJI export (KMZ/WPML)
-- Persistent app state (missions, active mission, layers, token, map camera)
-- Responsive side panels + collapsible Flight Planning panel
-- Right-click map menu to copy clicked coordinates (lat,lon)
+An open-source, web-based drone mission planning tool built with **CesiumJS** and **React**. Plan area survey and waypoint missions on a 3D globe, configure photogrammetry parameters, and export DJI-compatible KMZ/WPML files ready for DJI Pilot 2.
 
 ---
 
-## Project Structure
+## Features
 
-```text
-3d-planer/
-├─ README.md
-├─ QUICKSTART.md
-├─ IMPLEMENTATION.md
-└─ frontend/
-   ├─ package.json
-   ├─ src/
-   │  ├─ components/
-   │  │  ├─ CesiumMap.tsx
-   │  │  ├─ LayerManager.tsx
-   │  │  ├─ MissionManager.tsx
-   │  │  └─ FlightPlanner.tsx
-   │  ├─ lib/
-   │  │  ├─ flight-calculations.ts
-   │  │  ├─ flight-path-generator.ts
-   │  │  ├─ kml-parser.ts
-   │  │  ├─ dji-export.ts
-   │  │  ├─ dji-wpml-exporter.ts
-   │  │  ├─ cesium-ion-api.ts
-   │  │  └─ terrain-sampler.ts
-   │  └─ stores/
-   │     └─ mission-store.ts
-   └─ ...
-```
+- **3D Globe** — Full CesiumJS viewer with 2D / 3D / Columbus view modes and address + coordinate search
+- **Mission Manager** — Create, manage, show/hide, and focus multiple missions
+- **Layer Manager** — Add Cesium Ion terrain, imagery, and 3D Tiles assets with visibility and opacity controls
+- **Area Missions** — Import area KML/KMZ or draw polygons interactively; edit vertices on the map
+- **Waypoint Missions** — Import waypoint KML/KMZ or draw routes interactively; edit points on the map
+- **Photogrammetry Engine** — Real-time GSD, footprint, line spacing, photo interval, blur analysis, and speed calculations
+- **Terrain-Aware Planning** — AGL-based waypoint altitude adjustment using terrain sampling
+- **DJI Export** — Export missions as DJI Pilot 2 compatible KMZ/WPML packages
+- **Drone & Camera Database** — Preloaded specs for DJI Mavic 3E, Matrice 300 RTK (P1, L2, PhaseOne P3), Matrice 4E, and Sony ILX-LR1
+- **Persistent State** — Missions, layers, Cesium token, camera position, and settings survive page reloads
+- **Right-Click Context Menu** — Copy clicked coordinates from anywhere on the map
+
+---
+
+## Supported Drones & Cameras
+
+| Drone | Cameras |
+|---|---|
+| DJI Mavic 3 Enterprise | Wide (20 MP), Zoom (12 MP) |
+| DJI Matrice 300 RTK | Zenmuse P1 35 mm, P1 50 mm, L2 LiDAR, PhaseOne P3 GS120 80 mm (120 MP) |
+| DJI Matrice 4E | Wide, Zoom |
+| Custom Platform | Sony ILX-LR1 50 mm, 100 mm |
 
 ---
 
 ## Requirements
 
-- Node.js 18+
-- npm 9+
-- Windows/macOS/Linux
-- Internet access (Cesium/Ion map resources)
+- **Node.js** 18 or later
+- **npm** 9 or later
+- Windows / macOS / Linux
+- A modern browser (Chrome, Edge, Firefox)
+- Internet connection (Cesium globe tiles)
 
 ---
 
 ## Installation
 
-From workspace root:
-
 ```bash
-cd frontend
+git clone https://github.com/empatidf/DJI-3D-Flight-Planner.git
+cd DJI-3D-Flight-Planner/frontend
 npm install
 ```
 
 ---
 
-## Run (Development)
+## Development
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Vite will print the local URL (commonly `http://localhost:5173`).
+Open the URL printed by Vite (usually `http://localhost:3000`).
 
-> Note: run commands from `frontend` folder. Running `npm run dev` from workspace root will fail because the root folder is not the Vite app package.
+> **Note:** Always run npm commands from the `frontend` folder.
 
 ---
 
-## Build (Production)
+## Production Build
 
 ```bash
 cd frontend
 npm run build
+npm run preview   # optional: preview the build locally
 ```
 
-Preview built output locally:
+---
 
-```bash
-npm run preview
-```
+## Setting Up Cesium Ion (Required for Terrain & Imagery)
+
+The app uses **Cesium Ion** to serve terrain, imagery, and 3D Tiles. You need a free Cesium Ion account.
+
+### 1. Create a Cesium Ion Account
+
+1. Go to [https://ion.cesium.com/signup](https://ion.cesium.com/signup) and create a free account.
+2. After signing in you will land on the **Assets** dashboard.
+
+### 2. Get Your Access Token
+
+1. In Cesium Ion, go to **Access Tokens** (left sidebar or [https://ion.cesium.com/tokens](https://ion.cesium.com/tokens)).
+2. Copy your **Default Token**, or click **Create Token** to make a new one with the scopes you need (at minimum: `assets:read`).
+3. In the app, open the **Cesium Layer Manager** panel (left sidebar) and paste your token into the token field.
+
+### 3. Upload Your Own Assets (Optional)
+
+You can upload custom terrain (GeoTIFF, Terrain DB), imagery, or 3D Tiles:
+
+1. In Cesium Ion, click **Add Data** → **Upload**.
+2. Select your file (e.g., a GeoTIFF DEM/DSM, orthophoto, or 3D tileset).
+3. Choose the asset type:
+   - **Terrain** — for elevation models (DEM, DSM, GeoTIFF)
+   - **Imagery** — for orthophotos or satellite images
+   - **3D Tiles** — for point clouds, photogrammetry models, or BIM
+4. Wait for processing to complete. Once done, note the **Asset ID** shown on the asset detail page.
+5. In the app's Layer Manager, your uploaded assets will appear in the asset list when you click **Add Layer**. Select the asset and choose its type.
+
+### 4. Default Assets
+
+Cesium Ion provides free global assets you can use immediately:
+
+| Asset | Ion Asset ID | Type |
+|---|---|---|
+| Cesium World Terrain | `1` | Terrain |
+| Bing Maps Aerial | `2` | Imagery |
+| Cesium OSM Buildings | `96188` | 3D Tiles |
+
+These are available under any Cesium Ion account.
 
 ---
 
 ## How to Use
 
-### 1) Create or Select Mission
+### 1. Create a Mission
 
-- Use **Missions** panel to create a mission.
-- Click a mission name to activate and auto-focus map.
-- Use the visibility icon to show/hide each mission quickly.
+Open the **Missions** panel (left sidebar) and click **Create Mission**. Click a mission name to activate it and auto-focus the map.
 
-### 2) Set Cesium Token and Add Assets
+### 2. Define Mission Geometry
 
-In **Cesium Layer Manager**:
+**Area Mission:**
+- Click **Import Area KML/KMZ** to load an existing polygon, or
+- Click **Draw Mission Area**, click points on the map, then right-click to finish.
 
-1. Add your Cesium Ion token.
-2. Select an asset from your account.
-3. Add terrain/imagery/3D tiles layers.
-4. Toggle visibility and adjust opacity.
+**Waypoint Mission:**
+- Click **Import Waypoint KML/KMZ**, or
+- Click **Add Waypoint**, click points on the map, then right-click to finish.
 
-Tips:
-- Terrain + imagery can be active together.
-- If an imagery asset returns tile 404s from Ion, that is usually an asset availability/tiling issue, not planner math.
+### 3. Edit on the Map
 
-### 3) Define Mission Geometry
+Activate edit mode from the Flight Planning panel. Drag vertices to adjust your area or waypoint positions. Click **Save** when done.
 
-### Area Mission
-- Import area KML/KMZ, or
-- Use **Draw Mission Area** and right-click to finish.
+### 4. Configure Flight Parameters
 
-### Waypoint Mission
-- Import waypoint KML/KMZ, or
-- Use **Add Waypoint** and right-click to finish.
+In the **Flight Planning** panel (right sidebar), adjust:
 
-### 4) Edit on Map
+- Drone & camera selection
+- Altitude, speed, overlaps
+- Flight direction angle
+- Gimbal pitch / yaw, drone heading
+- Waypoint actions (photo, video, hover)
 
-For active mission:
+All photogrammetry metrics (GSD, blur, flight time, photo count) update in real time.
 
-- Start edit mode from Flight Planning tools.
-- Drag points to refine area/waypoints.
-- Save when done.
+### 5. Generate & Export
 
-### 5) Configure Flight Parameters
+- **Area missions:** Click **Generate Flight Lines** to compute the survey pattern, then **Export DJI KMZ** to download the package.
+- **Waypoint missions:** Configure actions per waypoint, then export.
 
-In **Flight Planning** panel adjust:
-
-- altitude
-- speed
-- overlaps
-- flight direction
-- gimbal/drone yaw options
-- waypoint actions
-
-Calculated metrics update accordingly.
-
-### 6) Generate Plan and Export
-
-- Generate flight lines for area missions.
-- Review mission summary.
-- Export DJI-compatible KMZ/WPML.
+The exported KMZ is compatible with **DJI Pilot 2**.
 
 ---
 
-## UI Notes
+## Deploying on Vercel
 
-- Left side has **Cesium Layer Manager** + **Missions** with equal-height responsive behavior and internal scrolling.
-- Right side **Flight Planning** panel can be collapsed/expanded with animated toggle.
-- Search bar is top-centered and responsive to viewport width.
+This project deploys easily on [Vercel](https://vercel.com):
+
+1. Import your GitHub repository on [vercel.com/new](https://vercel.com/new).
+2. Set the following in project settings:
+   - **Root Directory:** `frontend`
+   - **Build Command:** `npm run build`
+   - **Output Directory:** `dist`
+   - **Framework Preset:** Vite
+3. Deploy. Vercel will auto-deploy on every push to `master`.
+
+---
+
+## Project Structure
+
+```
+DJI-3D-Flight-Planner/
+├── README.md
+├── QUICKSTART.md
+├── IMPLEMENTATION.md
+└── frontend/
+    ├── package.json
+    ├── index.html
+    ├── vite.config.ts
+    └── src/
+        ├── components/
+        │   ├── CesiumMap.tsx         # 3D globe & drawing
+        │   ├── LayerManager.tsx      # Cesium Ion layer controls
+        │   ├── MissionManager.tsx    # Mission list & management
+        │   └── FlightPlanner.tsx     # Flight parameters & export
+        ├── lib/
+        │   ├── drone-specs.ts        # Drone & camera database
+        │   ├── flight-calculations.ts
+        │   ├── flight-path-generator.ts
+        │   ├── kml-parser.ts
+        │   ├── dji-wpml-exporter.ts
+        │   ├── cesium-ion-api.ts
+        │   ├── terrain-sampler.ts
+        │   └── coordinate-transform.ts
+        └── stores/
+            └── mission-store.ts      # Zustand state management
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| UI Framework | React 19 + TypeScript |
+| Build Tool | Vite |
+| 3D Globe | CesiumJS |
+| State Management | Zustand (persisted to localStorage) |
+| Coordinate Transforms | proj4js |
+| KML/KMZ Handling | JSZip + DOM parser |
+| Styling | CSS (no framework) |
 
 ---
 
 ## Persistence
 
-The app stores state in browser local storage (via Zustand persist), including:
-
-- missions and active mission
-- layer settings
-- Cesium token
-- selected view mode
-- last camera/map view
-
-On refresh/reopen, previous state is restored.
+The app stores all state in browser localStorage via Zustand, including missions, layers, Cesium Ion token, view mode, and camera position. Everything is restored on page reload.
 
 ---
 
 ## Troubleshooting
 
-### Dev command fails
+**Dev server won't start?**
+- Make sure you are inside the `frontend` folder before running `npm run dev`.
 
-- Ensure you are inside `frontend` before running npm scripts.
+**Map is blank or tiles fail to load?**
+- Check your internet connection.
+- Verify your Cesium Ion token is entered correctly in the Layer Manager.
+
+**Calculations show NaN?**
+- Ensure altitude and speed are greater than 0.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request.
+
+1. Fork the repository
+2. Create a feature branch from `dev`
+3. Commit your changes
+4. Open a pull request against `dev`
+
+---
+
+## License
+
+This project is open source. See the repository for license details.
 
 ### Map layers flicker/reload unexpectedly
 

@@ -1,44 +1,107 @@
 # Quick Start Guide
 
-## 🚀 Get Running in 5 Minutes
+Get the DJI 3D Flight Planner running locally in under 5 minutes.
 
-### Step 1: Start the Frontend
+---
+
+## 1. Clone & Install
 
 ```bash
-cd d:\vscode\3d-planer\frontend
+git clone https://github.com/empatidf/DJI-3D-Flight-Planner.git
+cd DJI-3D-Flight-Planner/frontend
+npm install
+```
+
+## 2. Start the Dev Server
+
+```bash
 npm run dev
 ```
 
-✅ Open browser to **http://localhost:3000**
+Open the URL printed by Vite (usually **http://localhost:3000**).
 
-You should now see:
-- 3D Cesium globe with OpenStreetMap
-- Layer Manager panel on the left
-- Flight Planning sidebar on the right
+You should see a 3D Cesium globe with a Layer Manager on the left and a Flight Planning panel on the right.
 
-### Step 2: Try Flight Planning
+---
 
-1. **Select Your Drone**
-   - Choose "DJI Mavic 3 Enterprise" or "DJI Matrice 300 RTK"
+## 3. Add Your Cesium Ion Token
 
-2. **Select Camera**
-   - For Mavic 3E: Choose "Wide" or "Zoom"
-   - For M300: Choose "P1 35mm" or "L2 LiDAR"
+The map loads with a basic view, but to use terrain, imagery, or 3D Tiles you need a Cesium Ion token.
 
-3. **Set Flight Parameters**
-   - Altitude: 100 meters (good starting point)
-   - Speed: 8 m/s (safe for most conditions)
-   - Forward Overlap: 80%
-   - Side Overlap: 70%
-   - Flight Angle: 0° (North-South lines)
+1. Create a free account at [https://ion.cesium.com/signup](https://ion.cesium.com/signup).
+2. Go to **Access Tokens** → copy your **Default Token** (or create a new one).
+3. In the app, open the **Cesium Layer Manager** (left panel) and paste the token.
 
-4. **View Calculated Results**
-   - Watch GSD, photo interval, and other values update instantly
-   - Check for blur warnings (should be green)
+Your Cesium Ion assets will now be available. See the [README](README.md#setting-up-cesium-ion-required-for-terrain--imagery) for details on uploading your own terrain and imagery.
 
-### Step 3: Test with Sample KML (Optional)
+---
 
-Create a simple test KML file (`test_area.kml`):
+## 4. Create Your First Mission
+
+1. In the **Missions** panel (left sidebar), click **Create Mission**.
+2. Click the mission name to activate it.
+
+---
+
+## 5. Define the Survey Area
+
+Choose one of:
+
+- **Import KML/KMZ** — Click the import button in the Flight Planning panel and select a polygon KML/KMZ file.
+- **Draw on Map** — Click **Draw Mission Area**, click points on the globe to define corners, then **right-click** to finish the polygon.
+
+---
+
+## 6. Configure Flight Parameters
+
+In the **Flight Planning** panel (right sidebar):
+
+| Parameter | Recommended Starting Value |
+|---|---|
+| Drone | DJI Mavic 3 Enterprise |
+| Camera | Wide Camera |
+| Altitude | 100 m |
+| Speed | 8 m/s |
+| Forward Overlap | 80% |
+| Side Overlap | 70% |
+| Flight Angle | 0° (North–South) |
+
+All calculated metrics (GSD, photo interval, line spacing, blur, flight time) update in real time as you adjust values.
+
+---
+
+## 7. Generate Flight Lines & Export
+
+1. Click **Generate Flight Lines** to compute the survey pattern on the map.
+2. Review the mission summary (photo count, flight time, distance).
+3. Click **Export DJI KMZ** to download a package compatible with **DJI Pilot 2**.
+
+---
+
+## Waypoint Missions
+
+For waypoint (non-area) missions:
+
+1. Create a new mission.
+2. Click **Add Waypoint** and click points on the map. Right-click to finish.
+3. Configure per-waypoint actions (photo, video, hover).
+4. Export the KMZ.
+
+---
+
+## Experiment with Parameters
+
+Try changing values and watch the results:
+
+- **Increase altitude to 150 m** — GSD gets larger, fewer photos, shorter flight time.
+- **Increase speed to 12 m/s** — Watch for blur warnings; flight time decreases.
+- **Increase overlaps to 85% / 75%** — More photos, tighter line spacing, better reconstruction quality.
+
+---
+
+## Sample KML for Testing
+
+Save this as `test_area.kml` and import it:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -65,82 +128,25 @@ Create a simple test KML file (`test_area.kml`):
 </kml>
 ```
 
-Then:
-1. Click "Import KML/KMZ" button
-2. Select your test file
-3. Mission will be created automatically
-4. (Note: UI for this is in development phase)
+---
 
-### Step 4: Experiment with Parameters
-
-Try changing values and watch calculations update:
-
-**Increase Altitude to 150m:**
-- GSD increases (lower resolution)
-- Footprint gets larger
-- Fewer photos needed
-- Flight time decreases
-
-**Increase Speed to 12 m/s:**
-- Photo interval decreases
-- Watch for blur warnings
-- Flight time decreases
-
-**Increase Overlaps to 85%/75%:**
-- More photos captured
-- Line spacing decreases
-- Flight time increases
-- Better reconstruction quality
-
-### What Works Right Now ✅
-
-- ✅ 3D/2D map visualization
-- ✅ Layer visibility controls
-- ✅ Drone and camera selection
-- ✅ Real-time flight calculations
-- ✅ Parameter validation and warnings
-- ✅ Professional calculation accuracy
-
-### Coming Soon 🔜
-
-- Flight line visualization on the map
-- Manual area drawing
-- Mission list and switching
-- Export to DJI Pilot 2 format
-- Terrain file upload
-- Complete workflow integration
-
-### Troubleshooting
+## Troubleshooting
 
 **Map doesn't load?**
-- Check internet connection (OpenStreetMap needs access)
-- Try refreshing the page
-- Check browser console (F12) for errors
+- Check your internet connection (globe tiles are streamed).
+- Refresh the page and check the browser console (F12) for errors.
 
-**Calculations show "NaN"?**
-- Make sure altitude > 0
-- Make sure speed > 0
-- Check that overlaps are between 0-100
+**Calculations show NaN?**
+- Ensure altitude and speed are greater than 0.
 
-**Performance issues?**
-- Close other browser tabs
-- Try reducing map quality in settings
-- Use Chrome/Edge for best performance
-
-### Next Steps
-
-1. Read the full [README.md](README.md) for detailed features
-2. Check [IMPLEMENTATION.md](IMPLEMENTATION.md) for technical details
-3. Explore the code in `frontend/src/` to understand how it works
-4. Try modifying drone specs in `frontend/src/lib/drone-specs.ts`
-
-### Need Help?
-
-- See comprehensive documentation in README.md
-- Check implementation notes in IMPLEMENTATION.md
-- Review code comments (JSDoc format)
-- Open GitHub issue for bugs
+**Slow performance?**
+- Close other heavy browser tabs.
+- Use Chrome or Edge for best WebGL performance.
 
 ---
 
-**Tip:** The app is in active development. Core calculations and UI are complete, but some features (like 3D flight line display) are still being integrated. The fundamental flight planning engine is fully functional!
+## Next Steps
+
+- Read the full [README](README.md) for all features and Cesium Ion setup details.
+- See [IMPLEMENTATION.md](IMPLEMENTATION.md) for technical architecture.
+- Explore the source code in `frontend/src/`.
