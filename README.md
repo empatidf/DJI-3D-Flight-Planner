@@ -1,6 +1,8 @@
 # DJI 3D Flight Planner
 
-An open-source, web-based drone mission planning tool built with **CesiumJS** and **React**. Plan area survey and waypoint missions on a 3D globe, configure photogrammetry parameters, and export DJI-compatible KMZ/WPML files ready for DJI Pilot 2.
+**Live App:** [https://flight.droneverse.de](https://flight.droneverse.de)
+
+A web-based drone mission planning tool built with **CesiumJS** and **React**. Plan area survey and waypoint missions on a 3D globe, configure photogrammetry parameters, and export DJI-compatible KMZ/WPML files ready for DJI Pilot 2.
 
 ---
 
@@ -157,17 +159,22 @@ The exported KMZ is compatible with **DJI Pilot 2**.
 
 ---
 
-## Deploying on Vercel
+## Live Demo
 
-This project deploys easily on [Vercel](https://vercel.com):
+The app is live at **[https://flight.droneverse.de](https://flight.droneverse.de)** — no installation required.
 
-1. Import your GitHub repository on [vercel.com/new](https://vercel.com/new).
-2. Set the following in project settings:
+## Self-Hosting / Deploying on Vercel
+
+You can deploy your own instance on [Vercel](https://vercel.com):
+
+1. Fork this repository.
+2. Import it on [vercel.com/new](https://vercel.com/new).
+3. Set the following in project settings:
    - **Root Directory:** `frontend`
    - **Build Command:** `npm run build`
    - **Output Directory:** `dist`
    - **Framework Preset:** Vite
-3. Deploy. Vercel will auto-deploy on every push to `master`.
+4. Deploy. Vercel will auto-deploy on every push to `master`.
 
 ---
 
@@ -250,7 +257,15 @@ Contributions are welcome! Please open an issue or submit a pull request.
 
 ## License
 
-This project is open source. See the repository for license details.
+This project is licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+
+- **Personal & hobby use** — Free. Use it, learn from it, enjoy it.
+- **Non-commercial organizations** — Free (educational institutions, charities, government, research).
+- **Commercial use** — Requires a separate commercial license. Please contact **[info@droneverse.de](mailto:info@droneverse.de)** for licensing.
+
+See the [LICENSE](LICENSE) file for the full legal text.
+
+**Copyright 2026 [Droneverse](https://droneverse.de)**
 
 ### Map layers flicker/reload unexpectedly
 

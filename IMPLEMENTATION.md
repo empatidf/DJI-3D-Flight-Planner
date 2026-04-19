@@ -1,5 +1,7 @@
 # Technical Architecture
 
+**Live App:** [https://flight.droneverse.de](https://flight.droneverse.de)
+
 Technical overview of the DJI 3D Flight Planner codebase for contributors and developers.
 
 ---

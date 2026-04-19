@@ -1,6 +1,8 @@
 # Quick Start Guide
 
-Get the DJI 3D Flight Planner running locally in under 5 minutes.
+**Live App:** [https://flight.droneverse.de](https://flight.droneverse.de) — no installation needed.
+
+Or run it locally in under 5 minutes:
 
 ---
 
