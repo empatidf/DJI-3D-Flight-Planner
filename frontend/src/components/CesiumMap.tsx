@@ -32,7 +32,7 @@ import {
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
-import { sampleTerrainForWaypoints } from '../lib/terrain-sampler';
+import { sampleTerrainForWaypoints, sampleTerrainWithSubPoints } from '../lib/terrain-sampler';
 
 Ion.defaultAccessToken = '';
 
@@ -121,12 +121,32 @@ export const CesiumMap = () => {
   const updateGeocoderServices = (viewer: Viewer, includeIon: boolean) => {
     if (!viewer.geocoder) return;
 
-    const geocoderServices = [new CartographicGeocoderService()];
-    if (includeIon) {
-      geocoderServices.unshift(new IonGeocoderService({ scene: viewer.scene }));
-    }
+    try {
+      const geocoderServices: (CartographicGeocoderService | IonGeocoderService)[] = [
+        new CartographicGeocoderService(),
+      ];
+      if (includeIon && Ion.defaultAccessToken) {
+        geocoderServices.unshift(
+          new IonGeocoderService({ scene: viewer.scene, accessToken: Ion.defaultAccessToken })
+        );
+      }
 
-    ((viewer.geocoder.viewModel as unknown) as { geocoderServices: unknown[] }).geocoderServices = geocoderServices;
+      const vm = viewer.geocoder.viewModel as unknown as { _geocoderServices?: unknown[]; geocoderServices?: unknown[] };
+      // CesiumJS stores services in _geocoderServices (private) or geocoderServices (public).
+      // Update both to ensure the widget picks up the new services.
+      if (vm._geocoderServices) {
+        vm._geocoderServices = geocoderServices;
+      }
+      if (vm.geocoderServices) {
+        vm.geocoderServices = geocoderServices;
+      }
+      // Fallback: set via the public property path used in older Cesium versions
+      if (!vm._geocoderServices && !vm.geocoderServices) {
+        (viewer.geocoder.viewModel as unknown as { geocoderServices: unknown[] }).geocoderServices = geocoderServices;
+      }
+    } catch (error) {
+      console.warn('Failed to update geocoder services:', error);
+    }
   };
 
   const loadIonImageryProviderWithRetry = async (
@@ -155,6 +175,14 @@ export const CesiumMap = () => {
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return;
 
+    // Initialize geocoder with CartographicGeocoderService only (coordinate search).
+    // IonGeocoderService (address search) is added later when the Cesium Ion token
+    // is available, avoiding a broken geocoder in production where the token is not
+    // yet set at Viewer construction time.
+    const initialGeocoderServices: (CartographicGeocoderService | IonGeocoderService)[] = [
+      new CartographicGeocoderService(),
+    ];
+
     // Initialize Cesium Viewer (default world is loaded after token is provided)
     const viewer = new Viewer(containerRef.current, {
       baseLayerPicker: false,
@@ -165,7 +193,7 @@ export const CesiumMap = () => {
       timeline: false,
       fullscreenButton: false,
       vrButton: false,
-      geocoder: true,
+      geocoder: initialGeocoderServices,
       homeButton: true,
       sceneModePicker: true,
       navigationHelpButton: true,
@@ -1567,8 +1595,20 @@ export const CesiumMap = () => {
       const points = drawPointsRef.current;
       if (points.length < 2) return;
 
-      // Now apply the mission altitude to the drawn ground-level points
-      const terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, points, missionAltitude);
+      // Check if terrain follow is enabled for this mission
+      const currentMission = useMissionStore
+        .getState()
+        .missions.find((m) => m.id === activeMissionId);
+      const useTerrainFollow = currentMission?.parameters?.alwaysTerrainFollow ?? false;
+      const terrainAccuracy = currentMission?.parameters?.terrainFollowAccuracy ?? 2;
+
+      // Apply the mission altitude to the drawn ground-level points
+      let terrainAdjustedWaypoints: number[][];
+      if (useTerrainFollow) {
+        terrainAdjustedWaypoints = await sampleTerrainWithSubPoints(viewer, points, missionAltitude, terrainAccuracy);
+      } else {
+        terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, points, missionAltitude);
+      }
 
       updateMission(activeMissionId, {
         missionType: 'waypoint',

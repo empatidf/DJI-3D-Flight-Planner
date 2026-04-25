@@ -9,7 +9,7 @@ import { calculateFlightPlan } from '../lib/flight-calculations';
 import { useMissionStore } from '../stores/mission-store';
 import { importKMLFile, importWaypointKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
-import { getCesiumViewer, sampleTerrainForWaypoints } from '../lib/terrain-sampler';
+import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints } from '../lib/terrain-sampler';
 import { exportToDJI, downloadKMZ } from '../lib/dji-wpml-exporter';
 import './FlightPlanner.css';
 
@@ -47,6 +47,10 @@ export const FlightPlanner = () => {
   const [waypointHoverTime, setWaypointHoverTime] = useState<number>(2);
   const [waypointAutoDroneHeading, setWaypointAutoDroneHeading] = useState<boolean>(true);
   const [waypointAutoGimbalYaw, setWaypointAutoGimbalYaw] = useState<boolean>(true);
+  const [alwaysTerrainFollow, setAlwaysTerrainFollow] = useState<boolean>(false);
+  const [terrainFollowAccuracy, setTerrainFollowAccuracy] = useState<number>(2);
+  const [isTerrainCalculating, setIsTerrainCalculating] = useState<boolean>(false);
+  const [terrainCalcProgress, setTerrainCalcProgress] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('');
 
   const [showDroneConfig, setShowDroneConfig] = useState<boolean>(true);
@@ -86,14 +90,45 @@ export const FlightPlanner = () => {
     const convertedLines = await Promise.all(
       flightPlanResult.lines.map(async (line) => {
         const waypoints = line.waypoints.map((wp) => [wp.lon, wp.lat, wp.alt]);
-        const terrainWaypoints = viewer
-          ? await sampleTerrainForWaypoints(viewer, waypoints, altitude)
-          : waypoints;
 
-        const photoPoints = line.waypoints
-          .map((wp, index) => ({ wp, index }))
-          .filter(({ wp }) => wp.action === 'photo')
-          .map(({ index }) => terrainWaypoints[index]);
+        let terrainWaypoints: number[][];
+        if (viewer && alwaysTerrainFollow) {
+          // Terrain-follow mode: sub-sample between waypoints for true terrain following
+          terrainWaypoints = await sampleTerrainWithSubPoints(viewer, waypoints, altitude, terrainFollowAccuracy);
+        } else if (viewer) {
+          terrainWaypoints = await sampleTerrainForWaypoints(viewer, waypoints, altitude);
+        } else {
+          terrainWaypoints = waypoints;
+        }
+
+        // For photo points, use the original waypoint indices mapped to the terrain-adjusted array.
+        // When sub-sampling is active, the array is larger, so we identify photo points
+        // by matching the original photo waypoint positions to the nearest point in the result.
+        let photoPoints: number[][];
+        if (alwaysTerrainFollow && terrainWaypoints.length !== waypoints.length) {
+          // With sub-sampling, photo waypoints may not have a 1:1 index mapping.
+          // Match each original photo waypoint to the closest point in the sub-sampled result.
+          const photoWaypoints = line.waypoints.filter((wp) => wp.action === 'photo');
+          photoPoints = photoWaypoints.map((pw) => {
+            let bestDist = Infinity;
+            let bestPoint = terrainWaypoints[0];
+            for (const tp of terrainWaypoints) {
+              const dLon = tp[0] - pw.lon;
+              const dLat = tp[1] - pw.lat;
+              const dist = dLon * dLon + dLat * dLat;
+              if (dist < bestDist) {
+                bestDist = dist;
+                bestPoint = tp;
+              }
+            }
+            return bestPoint;
+          });
+        } else {
+          photoPoints = line.waypoints
+            .map((wp, index) => ({ wp, index }))
+            .filter(({ wp }) => wp.action === 'photo')
+            .map(({ index }) => terrainWaypoints[index]);
+        }
 
         return {
           id: line.id,
@@ -176,6 +211,8 @@ export const FlightPlanner = () => {
       setWaypointHoverTime(activeMission.parameters.waypointHoverTime ?? 2);
       setWaypointAutoDroneHeading(activeMission.parameters.waypointAutoDroneHeading ?? true);
       setWaypointAutoGimbalYaw(activeMission.parameters.waypointAutoGimbalYaw ?? true);
+      setAlwaysTerrainFollow(activeMission.parameters.alwaysTerrainFollow ?? false);
+      setTerrainFollowAccuracy(activeMission.parameters.terrainFollowAccuracy ?? 2);
     }
   }, [activeMissionId]);
 
@@ -323,6 +360,8 @@ export const FlightPlanner = () => {
         waypointHoverTime,
         waypointAutoDroneHeading,
         waypointAutoGimbalYaw,
+        alwaysTerrainFollow,
+        terrainFollowAccuracy,
       },
     });
     
@@ -351,6 +390,8 @@ export const FlightPlanner = () => {
         waypointHoverTime,
         waypointAutoDroneHeading,
         waypointAutoGimbalYaw,
+        alwaysTerrainFollow,
+        terrainFollowAccuracy,
       },
     });
 
@@ -364,9 +405,14 @@ export const FlightPlanner = () => {
       const viewer = getCesiumViewer();
 
       const applyWaypointAltitude = async () => {
-        const updatedWaypoints = viewer
-          ? await sampleTerrainForWaypoints(viewer, baseWaypoints, newAltitude)
-          : baseWaypoints;
+        let updatedWaypoints: number[][];
+        if (viewer && alwaysTerrainFollow) {
+          updatedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, newAltitude, terrainFollowAccuracy);
+        } else if (viewer) {
+          updatedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, newAltitude);
+        } else {
+          updatedWaypoints = baseWaypoints;
+        }
 
         updateMission(activeMissionId, {
           flightLines: [
@@ -509,9 +555,14 @@ export const FlightPlanner = () => {
 
         const viewer = getCesiumViewer();
         const baseWaypoints = waypointSet.coordinates.map((coord) => [coord[0], coord[1], altitude]);
-        const terrainAdjustedWaypoints = viewer
-          ? await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude)
-          : baseWaypoints;
+        let terrainAdjustedWaypoints: number[][];
+        if (viewer && alwaysTerrainFollow) {
+          terrainAdjustedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, altitude, terrainFollowAccuracy);
+        } else if (viewer) {
+          terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude);
+        } else {
+          terrainAdjustedWaypoints = baseWaypoints;
+        }
 
         updateMission(activeMissionId, {
           missionType: 'waypoint',
@@ -679,6 +730,193 @@ export const FlightPlanner = () => {
       console.error('Flight plan generation failed:', error);
       setStatusMessage('Failed to generate flight plan: ' + (error as Error).message);
       setTimeout(() => setStatusMessage(''), 5000);
+    }
+  };
+
+  /**
+   * Apply terrain follow sub-sampling to the current mission.
+   * Called explicitly by the user via the "Apply Terrain Follow" button.
+   */
+  const handleApplyTerrainFollow = async () => {
+    if (!activeMissionId || !activeMission) return;
+
+    const viewer = getCesiumViewer();
+    if (!viewer) {
+      setStatusMessage('Cesium viewer not available');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    setIsTerrainCalculating(true);
+    setTerrainCalcProgress('Preparing terrain follow calculation...');
+
+    try {
+      if (activeMission.missionType === 'area' && activeMission.aoi) {
+        // Area mission: regenerate flight plan with terrain follow
+        setTerrainCalcProgress('Generating flight lines with terrain follow...');
+        const { convertedLines, calculatedPlan } = await buildTerrainAdjustedAreaPlan(
+          activeMission.aoi.coordinates
+        );
+
+        updateMission(activeMissionId, {
+          flightLines: convertedLines,
+          parameters: {
+            ...activeMission.parameters,
+            alwaysTerrainFollow,
+            terrainFollowAccuracy,
+          },
+        });
+        setFlightPlan(calculatedPlan);
+
+        const totalWaypoints = convertedLines.reduce((sum, line) => sum + line.coordinates.length, 0);
+        setStatusMessage(`✓ Terrain follow applied: ${convertedLines.length} lines, ${totalWaypoints} waypoints`);
+      } else if (activeMission.missionType === 'waypoint' && activeMission.flightLines?.length > 0) {
+        // Waypoint mission: sub-sample existing waypoints
+        const firstLine = activeMission.flightLines[0];
+        const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], altitude]);
+
+        setTerrainCalcProgress(`Sub-sampling terrain for ${baseWaypoints.length} waypoints...`);
+        const updatedWaypoints = await sampleTerrainWithSubPoints(
+          viewer,
+          baseWaypoints,
+          altitude,
+          terrainFollowAccuracy
+        );
+
+        updateMission(activeMissionId, {
+          flightLines: [
+            {
+              ...firstLine,
+              coordinates: updatedWaypoints,
+            },
+            ...activeMission.flightLines.slice(1),
+          ],
+          parameters: {
+            ...activeMission.parameters,
+            alwaysTerrainFollow,
+            terrainFollowAccuracy,
+          },
+        });
+
+        setStatusMessage(`✓ Terrain follow applied: ${baseWaypoints.length} → ${updatedWaypoints.length} waypoints`);
+      } else {
+        setStatusMessage('No mission data to apply terrain follow to. Generate a flight plan or add waypoints first.');
+      }
+
+      setTimeout(() => setStatusMessage(''), 5000);
+    } catch (error) {
+      console.error('Terrain follow calculation failed:', error);
+      setStatusMessage('Terrain follow failed: ' + (error as Error).message);
+      setTimeout(() => setStatusMessage(''), 5000);
+    } finally {
+      setIsTerrainCalculating(false);
+      setTerrainCalcProgress('');
+    }
+  };
+
+  /**
+   * Handle toggling the "Always Terrain Follow" checkbox.
+   * When unchecked, revert the mission to standard terrain sampling (no sub-points).
+   */
+  const handleTerrainFollowToggle = async (checked: boolean) => {
+    setAlwaysTerrainFollow(checked);
+
+    if (!checked && activeMissionId && activeMission) {
+      // Revert to standard terrain sampling
+      const viewer = getCesiumViewer();
+      if (!viewer) return;
+
+      setIsTerrainCalculating(true);
+      setTerrainCalcProgress('Reverting to standard terrain sampling...');
+
+      try {
+        if (activeMission.missionType === 'area' && activeMission.aoi) {
+          // Regenerate area mission without terrain follow sub-sampling
+          const footprintWidth = (selectedCamera.sensorWidth * altitude) / selectedCamera.focalLength;
+          const footprintHeight = (selectedCamera.sensorHeight * altitude) / selectedCamera.focalLength;
+          const lineSpacing = footprintWidth * (1 - sideOverlap / 100);
+          const photoInterval = (footprintHeight * (1 - forwardOverlap / 100)) / speed;
+
+          if (!Number.isFinite(lineSpacing) || !Number.isFinite(photoInterval) || lineSpacing <= 0 || photoInterval <= 0) {
+            return;
+          }
+
+          const flightPlanResult = generateFlightLines(
+            activeMission.aoi.coordinates,
+            lineSpacing,
+            flightAngle,
+            altitude,
+            photoInterval,
+            speed
+          );
+
+          const convertedLines = await Promise.all(
+            flightPlanResult.lines.map(async (line) => {
+              const waypoints = line.waypoints.map((wp) => [wp.lon, wp.lat, wp.alt]);
+              const terrainWaypoints = await sampleTerrainForWaypoints(viewer, waypoints, altitude);
+
+              const photoPoints = line.waypoints
+                .map((wp, index) => ({ wp, index }))
+                .filter(({ wp }) => wp.action === 'photo')
+                .map(({ index }) => terrainWaypoints[index]);
+
+              return {
+                id: line.id,
+                coordinates: terrainWaypoints,
+                photoPoints,
+              };
+            })
+          );
+
+          const calculatedPlan = calculateFlightPlan(
+            selectedCamera,
+            altitude,
+            speed,
+            forwardOverlap,
+            sideOverlap,
+            flightPlanResult.totalDistance,
+            flightPlanResult.lines.length
+          );
+
+          updateMission(activeMissionId, {
+            flightLines: convertedLines,
+            parameters: {
+              ...activeMission.parameters,
+              alwaysTerrainFollow: false,
+            },
+          });
+          setFlightPlan(calculatedPlan);
+          setStatusMessage('✓ Reverted to standard terrain sampling');
+        } else if (activeMission.missionType === 'waypoint' && activeMission.flightLines?.length > 0) {
+          const firstLine = activeMission.flightLines[0];
+          const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], altitude]);
+          const updatedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude);
+
+          updateMission(activeMissionId, {
+            flightLines: [
+              {
+                ...firstLine,
+                coordinates: updatedWaypoints,
+              },
+              ...activeMission.flightLines.slice(1),
+            ],
+            parameters: {
+              ...activeMission.parameters,
+              alwaysTerrainFollow: false,
+            },
+          });
+          setStatusMessage('✓ Reverted to standard terrain sampling');
+        }
+
+        setTimeout(() => setStatusMessage(''), 3000);
+      } catch (error) {
+        console.error('Failed to revert terrain follow:', error);
+        setStatusMessage('Failed to revert: ' + (error as Error).message);
+        setTimeout(() => setStatusMessage(''), 5000);
+      } finally {
+        setIsTerrainCalculating(false);
+        setTerrainCalcProgress('');
+      }
     }
   };
 
@@ -960,6 +1198,69 @@ export const FlightPlanner = () => {
             <span className="warning">⚠️ Speed may cause blur</span>
           )}
         </label>
+
+        <div className="terrain-follow-settings">
+          <label className="inline-toggle terrain-follow-toggle">
+            <input
+              type="checkbox"
+              checked={alwaysTerrainFollow}
+              onChange={(e) => handleTerrainFollowToggle(e.target.checked)}
+              disabled={isTerrainCalculating}
+            />
+            <span>Always Terrain Follow</span>
+          </label>
+          {alwaysTerrainFollow && (
+            <div className="terrain-follow-info">
+              <small style={{ color: '#94a3b8', display: 'block', marginBottom: '8px' }}>
+                🏔️ Sub-samples terrain between waypoints and inserts extra points where elevation changes exceed the accuracy threshold. Creates true terrain-following flight paths.
+              </small>
+              <label>
+                Terrain Follow Accuracy (m):
+                <div className="range-control-row">
+                  <input
+                    className="range-number-input"
+                    type="number"
+                    value={terrainFollowAccuracy}
+                    onChange={(e) => setTerrainFollowAccuracy(Number(e.target.value))}
+                    min="0.1"
+                    max="50"
+                    step="0.1"
+                    disabled={isTerrainCalculating}
+                  />
+                  <input
+                    className="range-slider-input"
+                    type="range"
+                    value={terrainFollowAccuracy}
+                    onChange={(e) => setTerrainFollowAccuracy(Number(e.target.value))}
+                    min="0.1"
+                    max="50"
+                    step="0.1"
+                    disabled={isTerrainCalculating}
+                  />
+                </div>
+                <small style={{ color: '#94a3b8' }}>
+                  Insert sub-waypoint when elevation changes more than {terrainFollowAccuracy}m
+                </small>
+              </label>
+              <button
+                className="btn-terrain-follow-apply"
+                onClick={handleApplyTerrainFollow}
+                disabled={isTerrainCalculating || (!activeMission?.aoi && !(activeMission?.missionType === 'waypoint' && activeMission?.flightLines?.length))}
+                title="Recalculate mission with terrain follow sub-sampling"
+              >
+                {isTerrainCalculating ? '⏳ Calculating...' : '🏔️ Apply Terrain Follow'}
+              </button>
+            </div>
+          )}
+          {isTerrainCalculating && (
+            <div className="terrain-calc-progress">
+              <div className="terrain-calc-progress-bar">
+                <div className="terrain-calc-progress-bar-fill" />
+              </div>
+              <small className="terrain-calc-progress-text">{terrainCalcProgress}</small>
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Photogrammetry Parameters */}

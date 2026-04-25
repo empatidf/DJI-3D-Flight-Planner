@@ -22,6 +22,8 @@ export interface FlightParameters {
   waypointHoverTime: number; // seconds
   waypointAutoDroneHeading: boolean;
   waypointAutoGimbalYaw: boolean;
+  alwaysTerrainFollow: boolean; // when true, sub-sample terrain between waypoints
+  terrainFollowAccuracy: number; // meters — insert sub-waypoint when elevation changes more than this
 }
 
 export interface AreaOfInterest {

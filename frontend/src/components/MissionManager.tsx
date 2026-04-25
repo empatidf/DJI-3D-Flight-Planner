@@ -100,6 +100,8 @@ export const MissionManager = () => {
         waypointHoverTime: 2,
         waypointAutoDroneHeading: true,
         waypointAutoGimbalYaw: true,
+        alwaysTerrainFollow: false,
+        terrainFollowAccuracy: 2,
       },
       flightLines: [],
       layerSnapshot: layers.map((layer) => ({ ...layer })),
