@@ -49,6 +49,7 @@ export const FlightPlanner = () => {
   const [waypointAutoGimbalYaw, setWaypointAutoGimbalYaw] = useState<boolean>(true);
   const [alwaysTerrainFollow, setAlwaysTerrainFollow] = useState<boolean>(false);
   const [terrainFollowAccuracy, setTerrainFollowAccuracy] = useState<number>(2);
+  const [terrainFollowMinDist, setTerrainFollowMinDist] = useState<number>(2);
   const [isTerrainCalculating, setIsTerrainCalculating] = useState<boolean>(false);
   const [terrainCalcProgress, setTerrainCalcProgress] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -94,7 +95,7 @@ export const FlightPlanner = () => {
         let terrainWaypoints: number[][];
         if (viewer && alwaysTerrainFollow) {
           // Terrain-follow mode: sub-sample between waypoints for true terrain following
-          terrainWaypoints = await sampleTerrainWithSubPoints(viewer, waypoints, altitude, terrainFollowAccuracy);
+          terrainWaypoints = await sampleTerrainWithSubPoints(viewer, waypoints, altitude, terrainFollowAccuracy, terrainFollowMinDist);
         } else if (viewer) {
           terrainWaypoints = await sampleTerrainForWaypoints(viewer, waypoints, altitude);
         } else {
@@ -213,6 +214,7 @@ export const FlightPlanner = () => {
       setWaypointAutoGimbalYaw(activeMission.parameters.waypointAutoGimbalYaw ?? true);
       setAlwaysTerrainFollow(activeMission.parameters.alwaysTerrainFollow ?? false);
       setTerrainFollowAccuracy(activeMission.parameters.terrainFollowAccuracy ?? 2);
+      setTerrainFollowMinDist(activeMission.parameters.terrainFollowMinDist ?? 2);
     }
   }, [activeMissionId]);
 
@@ -362,6 +364,7 @@ export const FlightPlanner = () => {
         waypointAutoGimbalYaw,
         alwaysTerrainFollow,
         terrainFollowAccuracy,
+        terrainFollowMinDist,
       },
     });
     
@@ -392,6 +395,7 @@ export const FlightPlanner = () => {
         waypointAutoGimbalYaw,
         alwaysTerrainFollow,
         terrainFollowAccuracy,
+        terrainFollowMinDist,
       },
     });
 
@@ -407,7 +411,7 @@ export const FlightPlanner = () => {
       const applyWaypointAltitude = async () => {
         let updatedWaypoints: number[][];
         if (viewer && alwaysTerrainFollow) {
-          updatedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, newAltitude, terrainFollowAccuracy);
+          updatedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, newAltitude, terrainFollowAccuracy, terrainFollowMinDist);
         } else if (viewer) {
           updatedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, newAltitude);
         } else {
@@ -557,7 +561,7 @@ export const FlightPlanner = () => {
         const baseWaypoints = waypointSet.coordinates.map((coord) => [coord[0], coord[1], altitude]);
         let terrainAdjustedWaypoints: number[][];
         if (viewer && alwaysTerrainFollow) {
-          terrainAdjustedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, altitude, terrainFollowAccuracy);
+          terrainAdjustedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, altitude, terrainFollowAccuracy, terrainFollowMinDist);
         } else if (viewer) {
           terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude);
         } else {
@@ -764,6 +768,7 @@ export const FlightPlanner = () => {
             ...activeMission.parameters,
             alwaysTerrainFollow,
             terrainFollowAccuracy,
+            terrainFollowMinDist,
           },
         });
         setFlightPlan(calculatedPlan);
@@ -773,20 +778,25 @@ export const FlightPlanner = () => {
       } else if (activeMission.missionType === 'waypoint' && activeMission.flightLines?.length > 0) {
         // Waypoint mission: sub-sample existing waypoints
         const firstLine = activeMission.flightLines[0];
-        const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], altitude]);
+        // Snapshot originals once — preserve existing snapshot if already set so
+        // re-applying doesn't overwrite the true pre-terrain-follow waypoints.
+        const originalCoordinates = firstLine.originalCoordinates ?? firstLine.coordinates;
+        const baseWaypoints = originalCoordinates.map((coord) => [coord[0], coord[1], altitude]);
 
         setTerrainCalcProgress(`Sub-sampling terrain for ${baseWaypoints.length} waypoints...`);
         const updatedWaypoints = await sampleTerrainWithSubPoints(
           viewer,
           baseWaypoints,
           altitude,
-          terrainFollowAccuracy
+          terrainFollowAccuracy,
+          terrainFollowMinDist
         );
 
         updateMission(activeMissionId, {
           flightLines: [
             {
               ...firstLine,
+              originalCoordinates,
               coordinates: updatedWaypoints,
             },
             ...activeMission.flightLines.slice(1),
@@ -795,6 +805,7 @@ export const FlightPlanner = () => {
             ...activeMission.parameters,
             alwaysTerrainFollow,
             terrainFollowAccuracy,
+            terrainFollowMinDist,
           },
         });
 
@@ -889,7 +900,10 @@ export const FlightPlanner = () => {
           setStatusMessage('✓ Reverted to standard terrain sampling');
         } else if (activeMission.missionType === 'waypoint' && activeMission.flightLines?.length > 0) {
           const firstLine = activeMission.flightLines[0];
-          const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], altitude]);
+          // Restore the pre-terrain-follow waypoints if a snapshot exists,
+          // otherwise fall back to the current coordinates.
+          const restoredBase = firstLine.originalCoordinates ?? firstLine.coordinates;
+          const baseWaypoints = restoredBase.map((coord) => [coord[0], coord[1], altitude]);
           const updatedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude);
 
           updateMission(activeMissionId, {
@@ -897,6 +911,7 @@ export const FlightPlanner = () => {
               {
                 ...firstLine,
                 coordinates: updatedWaypoints,
+                originalCoordinates: undefined,
               },
               ...activeMission.flightLines.slice(1),
             ],
@@ -905,7 +920,7 @@ export const FlightPlanner = () => {
               alwaysTerrainFollow: false,
             },
           });
-          setStatusMessage('✓ Reverted to standard terrain sampling');
+          setStatusMessage('✓ Reverted to original waypoints');
         }
 
         setTimeout(() => setStatusMessage(''), 3000);
@@ -1240,6 +1255,34 @@ export const FlightPlanner = () => {
                 </div>
                 <small style={{ color: '#94a3b8' }}>
                   Insert sub-waypoint when elevation changes more than {terrainFollowAccuracy}m
+                </small>
+              </label>
+              <label>
+                Minimum Distance (m):
+                <div className="range-control-row">
+                  <input
+                    className="range-number-input"
+                    type="number"
+                    value={terrainFollowMinDist}
+                    onChange={(e) => setTerrainFollowMinDist(Number(e.target.value))}
+                    min="0.5"
+                    max="100"
+                    step="0.5"
+                    disabled={isTerrainCalculating}
+                  />
+                  <input
+                    className="range-slider-input"
+                    type="range"
+                    value={terrainFollowMinDist}
+                    onChange={(e) => setTerrainFollowMinDist(Number(e.target.value))}
+                    min="0.5"
+                    max="100"
+                    step="0.5"
+                    disabled={isTerrainCalculating}
+                  />
+                </div>
+                <small style={{ color: '#94a3b8' }}>
+                  Skip sub-waypoint if closer than {terrainFollowMinDist}m to the previous one
                 </small>
               </label>
               <button

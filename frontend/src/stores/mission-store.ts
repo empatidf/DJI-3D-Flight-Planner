@@ -24,6 +24,7 @@ export interface FlightParameters {
   waypointAutoGimbalYaw: boolean;
   alwaysTerrainFollow: boolean; // when true, sub-sample terrain between waypoints
   terrainFollowAccuracy: number; // meters — insert sub-waypoint when elevation changes more than this
+  terrainFollowMinDist: number; // meters — minimum horizontal distance between consecutive sub-waypoints
 }
 
 export interface AreaOfInterest {
@@ -36,6 +37,7 @@ export interface FlightLine {
   id: string;
   coordinates: number[][]; // waypoints [lon, lat, alt][]
   photoPoints: number[][]; // photo capture points
+  originalCoordinates?: number[][]; // pre-terrain-follow snapshot, used to revert
 }
 
 export interface Mission {

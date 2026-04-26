@@ -137,6 +137,7 @@ const interpolatePosition = (
  * @param endLat       - Segment end latitude (degrees)
  * @param aglAltitude  - Desired altitude above ground level (meters)
  * @param accuracyM    - Elevation change threshold for inserting sub-waypoints (meters)
+ * @param minDistM     - Minimum horizontal distance (meters) between consecutive sub-waypoints
  * @returns Array of [lon, lat, absoluteAltitude] including start and end
  */
 export const terrainFollowSubSample = async (
@@ -146,7 +147,8 @@ export const terrainFollowSubSample = async (
   endLon: number,
   endLat: number,
   aglAltitude: number,
-  accuracyM: number
+  accuracyM: number,
+  minDistM: number = 2
 ): Promise<number[][]> => {
   const terrainProvider = viewer.terrainProvider;
   const segmentDist = haversineDistance(startLon, startLat, endLon, endLat);
@@ -188,6 +190,7 @@ export const terrainFollowSubSample = async (
   const probeHeights = sampledPositions.map((pos) => (defined(pos.height) ? pos.height : 0));
 
   // Walk through probes and emit sub-waypoints where elevation change exceeds threshold
+  // AND horizontal distance from the last emitted point is at least minDistM.
   const result: number[][] = [];
 
   // Always include the first point
@@ -198,16 +201,21 @@ export const terrainFollowSubSample = async (
   ]);
 
   let lastEmittedHeight = probeHeights[0];
+  let lastEmittedLon = probePositions[0].lon;
+  let lastEmittedLat = probePositions[0].lat;
 
   for (let i = 1; i < probePositions.length - 1; i++) {
     const heightDelta = Math.abs(probeHeights[i] - lastEmittedHeight);
-    if (heightDelta >= accuracyM) {
+    const distFromLast = haversineDistance(lastEmittedLon, lastEmittedLat, probePositions[i].lon, probePositions[i].lat);
+    if (heightDelta >= accuracyM && distFromLast >= minDistM) {
       result.push([
         probePositions[i].lon,
         probePositions[i].lat,
         probeHeights[i] + aglAltitude,
       ]);
       lastEmittedHeight = probeHeights[i];
+      lastEmittedLon = probePositions[i].lon;
+      lastEmittedLat = probePositions[i].lat;
     }
   }
 
@@ -234,16 +242,18 @@ export const terrainFollowSubSample = async (
  * @param waypoints    - Original waypoints [[lon, lat, alt], ...]
  * @param aglAltitude  - Desired AGL altitude in meters
  * @param accuracyM    - Elevation change threshold in meters
+ * @param minDistM     - Minimum horizontal distance (meters) between consecutive sub-waypoints
  * @returns New waypoint array with sub-waypoints inserted for terrain following
  */
 export const sampleTerrainWithSubPoints = async (
   viewer: Viewer,
   waypoints: number[][],
   aglAltitude: number,
-  accuracyM: number
+  accuracyM: number,
+  minDistM: number = 2
 ): Promise<number[][]> => {
   console.log('=== TERRAIN FOLLOW SUB-SAMPLING START ===');
-  console.log(`Input waypoints: ${waypoints.length}, AGL: ${aglAltitude}m, accuracy: ${accuracyM}m`);
+  console.log(`Input waypoints: ${waypoints.length}, AGL: ${aglAltitude}m, accuracy: ${accuracyM}m, minDist: ${minDistM}m`);
 
   const terrainProvider = viewer.terrainProvider;
 
@@ -269,7 +279,8 @@ export const sampleTerrainWithSubPoints = async (
         lon1, lat1,
         lon2, lat2,
         aglAltitude,
-        accuracyM
+        accuracyM,
+        minDistM
       );
 
       // Add all points from this segment, but skip the first point of subsequent
