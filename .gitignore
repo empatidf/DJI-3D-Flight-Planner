@@ -1,2 +1,5 @@
 # Test data (not for distribution)
 test-data/
+
+# Local drone/camera profile files
+drone-camera-profiles/
