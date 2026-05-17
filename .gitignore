@@ -3,3 +3,9 @@ test-data/
 
 # Local drone/camera profile files
 drone-camera-profiles/
+
+# Obsidian knowledge base (local only)
+obsidian-vault/
+
+# Claude Code workspace files
+.claude/

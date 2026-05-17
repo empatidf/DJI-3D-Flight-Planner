@@ -251,7 +251,7 @@ const generateWaypointXML = (
   // Coordinated-turn damping distance: how far before the waypoint the aircraft
   // starts turning. Scales with speed so the turn arc fits between waypoints.
   const speed = parseWpmlFloat(parameters.speed, 8);
-  const dampingDist = formatWpmlFloat(Math.min(10, Math.max(0.5, speed * 0.5)), 2, 1);
+  const dampingDist = formatWpmlFloat(Math.min(2, Math.max(0.5, speed * 0.5)), 2, 1);
 
   const actions: string[] = [];
   let actionId = 0;
@@ -359,6 +359,8 @@ const generateTemplateWaypointXML = (
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
   const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
   const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
+  const speed = parseWpmlFloat(parameters.speed, 8);
+  const dampingDist = formatWpmlFloat(Math.min(2, Math.max(0.5, speed * 0.5)), 2, 1);
 
   return `    <Placemark>
       <Point>
@@ -375,6 +377,7 @@ const generateTemplateWaypointXML = (
       </wpml:waypointHeadingParam>
       <wpml:waypointTurnParam>
         <wpml:waypointTurnMode>coordinateTurn</wpml:waypointTurnMode>
+        <wpml:waypointTurnDampingDist>${dampingDist}</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
       <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
       <wpml:useStraightLine>1</wpml:useStraightLine>

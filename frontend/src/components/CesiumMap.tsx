@@ -1111,12 +1111,11 @@ export const CesiumMap = () => {
       id: `wp-edit-line-${activeMissionId}`,
       polyline: {
         positions: new CallbackProperty(() => {
-          return editCoordinates.current.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1], coord[2]));
+          return editCoordinates.current.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1]));
         }, false),
         width: 3,
         material: Color.YELLOW,
-        clampToGround: false,
-        arcType: 0,
+        clampToGround: true,
       },
     });
 
@@ -1127,6 +1126,7 @@ export const CesiumMap = () => {
     let deletePointEntity: Entity | null = null;
     let selectedPointIndex: number | null = null;
     let draggingPointIndex: number | null = null;
+    let skipNextAppendClick = false;
 
     const setNavigationEnabled = (enabled: boolean) => {
       const controller = viewer.scene.screenSpaceCameraController;
@@ -1163,15 +1163,14 @@ export const CesiumMap = () => {
     const buildMidPointCartesian = (edgeIndex: number) => {
       const coords = editCoordinates.current;
       if (coords.length < 2 || edgeIndex < 0 || edgeIndex >= coords.length - 1) {
-        return Cartesian3.fromDegrees(0, 0, missionAltitude);
+        return Cartesian3.fromDegrees(0, 0);
       }
       const first = coords[edgeIndex];
       const second = coords[edgeIndex + 1];
-      return Cartesian3.fromDegrees(
-        (first[0] + second[0]) / 2,
-        (first[1] + second[1]) / 2,
-        (first[2] + second[2]) / 2
-      );
+      const midLon = (first[0] + second[0]) / 2;
+      const midLat = (first[1] + second[1]) / 2;
+      const h = viewer.scene.globe.getHeight(Cartographic.fromDegrees(midLon, midLat)) ?? 0;
+      return Cartesian3.fromDegrees(midLon, midLat, h);
     };
 
     const getTerrainHeightAt = (coord: number[]) => {
@@ -1210,11 +1209,15 @@ export const CesiumMap = () => {
       }
 
       const coords = editCoordinates.current;
-      pointEntities = coords.map((coord, index) => {
+      pointEntities = coords.map((_, index) => {
         const isSelected = selectedPointIndex === index;
         return viewer.entities.add({
           id: `wp-edit-point-${activeMissionId}-${index}`,
-          position: Cartesian3.fromDegrees(coord[0], coord[1], coord[2]),
+          position: new CallbackPositionProperty(() => {
+            const current = editCoordinates.current[index];
+            if (!current) return Cartesian3.fromDegrees(0, 0);
+            return Cartesian3.fromDegrees(current[0], current[1], getTerrainHeightAt(current));
+          }, false),
           point: {
             pixelSize: isSelected ? 13 : 11,
             color: isSelected ? Color.RED : Color.CYAN,
@@ -1242,69 +1245,24 @@ export const CesiumMap = () => {
         });
       }
 
-      if (showWaypointHeightGuides) {
-        guideLineEntities = coords.map((_, index) => {
-          return viewer.entities.add({
-            id: `wp-edit-guide-line-${activeMissionId}-${index}`,
-            polyline: {
-              positions: new CallbackProperty(() => {
-                const current = editCoordinates.current[index];
-                if (!current) return [];
-                const terrainHeight = getTerrainHeightAt(current);
-                return [
-                  Cartesian3.fromDegrees(current[0], current[1], current[2]),
-                  Cartesian3.fromDegrees(current[0], current[1], terrainHeight),
-                ];
-              }, false),
-              width: 2,
-              material: Color.CYAN.withAlpha(0.75),
-              clampToGround: false,
-              arcType: 0,
-            },
-          });
-        });
-
-        guideLabelEntities = coords.map((_, index) => {
-          return viewer.entities.add({
-            id: `wp-edit-guide-label-${activeMissionId}-${index}`,
-            position: new CallbackPositionProperty(() => {
-              const current = editCoordinates.current[index];
-              if (!current) return Cartesian3.fromDegrees(0, 0, missionAltitude);
-              const terrainHeight = getTerrainHeightAt(current);
-              const midHeight = (current[2] + terrainHeight) / 2;
-              return Cartesian3.fromDegrees(current[0], current[1], midHeight);
-            }, false),
-            label: {
-              text: new CallbackProperty(() => {
-                const current = editCoordinates.current[index];
-                if (!current) return '';
-                const djiRelativeHeight = getDjiRelativeHeightAt(index);
-                return toVerticalText(djiRelativeHeight);
-              }, false),
-              font: 'bold 11px sans-serif',
-              fillColor: Color.WHITE,
-              outlineColor: Color.BLACK,
-              outlineWidth: 2,
-              pixelOffset: new Cartesian2(8, 0),
-              disableDepthTestDistance: Number.POSITIVE_INFINITY,
-            },
-          });
-        });
-      }
+      // Height guides are intentionally hidden during edit mode — editing at ground
+      // level makes them misleading. They reappear in normal view after saving.
 
       if (selectedPointIndex !== null && coords.length > 2) {
         deletePointEntity = viewer.entities.add({
           id: `wp-edit-delete-${activeMissionId}`,
           position: new CallbackPositionProperty(() => {
             const selected = editCoordinates.current[selectedPointIndex!];
-            return selected
-              ? Cartesian3.fromDegrees(selected[0], selected[1], selected[2])
-              : Cartesian3.fromDegrees(0, 0, missionAltitude);
+            if (!selected) return Cartesian3.fromDegrees(0, 0);
+            return Cartesian3.fromDegrees(selected[0], selected[1], getTerrainHeightAt(selected));
           }, false),
           label: {
             text: '🗑',
-            font: '18px sans-serif',
-            pixelOffset: new Cartesian2(-26, 0),
+            font: 'bold 20px sans-serif',
+            fillColor: Color.RED,
+            outlineColor: Color.WHITE,
+            outlineWidth: 3,
+            pixelOffset: new Cartesian2(-28, 0),
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
         });
@@ -1312,6 +1270,30 @@ export const CesiumMap = () => {
     };
 
     rebuildEditHandles();
+
+    const appendHoverRef = { current: null as number[] | null };
+
+    const getIsAppendMode = () =>
+      selectedPointIndex !== null && selectedPointIndex === editCoordinates.current.length - 1;
+
+    const appendPreviewEntity = viewer.entities.add({
+      id: `wp-edit-append-preview-${activeMissionId}`,
+      polyline: {
+        positions: new CallbackProperty(() => {
+          if (!getIsAppendMode() || !appendHoverRef.current) return [];
+          const coords = editCoordinates.current;
+          const last = coords[coords.length - 1];
+          if (!last) return [];
+          return [
+            Cartesian3.fromDegrees(last[0], last[1]),
+            Cartesian3.fromDegrees(appendHoverRef.current[0], appendHoverRef.current[1]),
+          ];
+        }, false),
+        width: 3,
+        material: Color.YELLOW,
+        clampToGround: true,
+      },
+    });
 
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
 
@@ -1321,8 +1303,9 @@ export const CesiumMap = () => {
 
       if (picked.id.id === `wp-edit-delete-${activeMissionId}`) {
         if (selectedPointIndex !== null && editCoordinates.current.length > 2) {
-          editCoordinates.current.splice(selectedPointIndex, 1);
-          selectedPointIndex = null;
+          const deletedIndex = selectedPointIndex;
+          editCoordinates.current.splice(deletedIndex, 1);
+          selectedPointIndex = Math.max(0, deletedIndex - 1);
           rebuildEditHandles();
           persistCoordinatesToStore();
           viewer.scene.requestRender();
@@ -1355,33 +1338,76 @@ export const CesiumMap = () => {
       if (pointMatch) {
         draggingPointIndex = Number(pointMatch[1]);
         selectedPointIndex = draggingPointIndex;
+        skipNextAppendClick = true;
         rebuildEditHandles();
         setNavigationEnabled(false);
       }
     }, ScreenSpaceEventType.LEFT_DOWN);
 
     handler.setInputAction((event: { endPosition: Cartesian2 }) => {
-      if (draggingPointIndex === null) return;
-
-      const lonLat = getLonLatFromScreenPosition(viewer, event.endPosition);
-      if (!lonLat) return;
-
-      const currentCoords = editCoordinates.current;
-      const altitude = Number.isFinite(currentCoords[draggingPointIndex][2])
-        ? currentCoords[draggingPointIndex][2]
-        : missionAltitude;
-
-      currentCoords[draggingPointIndex] = [lonLat.lon, lonLat.lat, altitude];
-
-      const draggedPoint = pointEntities[draggingPointIndex];
-      if (draggedPoint) {
-        draggedPoint.position = new ConstantPositionProperty(
-          Cartesian3.fromDegrees(lonLat.lon, lonLat.lat, altitude)
-        );
+      if (draggingPointIndex !== null) {
+        const lonLat = getLonLatFromScreenPosition(viewer, event.endPosition);
+        if (!lonLat) return;
+        const currentCoords = editCoordinates.current;
+        const altitude = Number.isFinite(currentCoords[draggingPointIndex][2])
+          ? currentCoords[draggingPointIndex][2]
+          : missionAltitude;
+        currentCoords[draggingPointIndex] = [lonLat.lon, lonLat.lat, altitude];
+        viewer.scene.requestRender();
+        return;
       }
 
-      viewer.scene.requestRender();
+      if (getIsAppendMode()) {
+        const lonLat = getLonLatFromScreenPosition(viewer, event.endPosition);
+        if (lonLat) {
+          appendHoverRef.current = [lonLat.lon, lonLat.lat];
+          viewer.scene.requestRender();
+        }
+      }
     }, ScreenSpaceEventType.MOUSE_MOVE);
+
+    handler.setInputAction((event: { position: Cartesian2 }) => {
+      if (!getIsAppendMode()) return;
+
+      // The same click that selected the last point must not also append a new one.
+      if (skipNextAppendClick) {
+        skipNextAppendClick = false;
+        return;
+      }
+
+      // Ignore clicks on interactive handle entities; clicks on the line or terrain should add a point
+      const picked = viewer.scene.pick(event.position) as { id?: Entity } | undefined;
+      if (picked?.id && typeof picked.id.id === 'string') {
+        const pid = picked.id.id;
+        if (
+          pid.startsWith(`wp-edit-point-${activeMissionId}-`) ||
+          pid.startsWith(`wp-edit-add-${activeMissionId}-`) ||
+          pid === `wp-edit-delete-${activeMissionId}`
+        ) return;
+      }
+
+      const lonLat = getLonLatFromScreenPosition(viewer, event.position);
+      if (!lonLat) return;
+
+      const coords = editCoordinates.current;
+      const lastCoord = coords[coords.length - 1];
+      const altitude = lastCoord && Number.isFinite(lastCoord[2]) ? lastCoord[2] : missionAltitude;
+
+      coords.push([lonLat.lon, lonLat.lat, altitude]);
+      selectedPointIndex = coords.length - 1;
+      rebuildEditHandles();
+      persistCoordinatesToStore();
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
+    handler.setInputAction(() => {
+      if (!getIsAppendMode()) return;
+      suppressNextContextMenuRef.current = true;
+      appendHoverRef.current = null;
+      selectedPointIndex = null;
+      rebuildEditHandles();
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.RIGHT_CLICK);
 
     const stopDrag = () => {
       if (draggingPointIndex !== null) {
@@ -1393,10 +1419,25 @@ export const CesiumMap = () => {
 
     handler.setInputAction(stopDrag, ScreenSpaceEventType.LEFT_UP);
 
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return;
+      if (selectedPointIndex === null || editCoordinates.current.length <= 2) return;
+      const deletedIndex = selectedPointIndex;
+      editCoordinates.current.splice(deletedIndex, 1);
+      selectedPointIndex = Math.max(0, deletedIndex - 1);
+      rebuildEditHandles();
+      persistCoordinatesToStore();
+      viewer.scene.requestRender();
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
     return () => {
       handler.destroy();
+      document.removeEventListener('keydown', handleKeyDown);
       setNavigationEnabled(true);
       viewer.entities.remove(lineEntity);
+      viewer.entities.remove(appendPreviewEntity);
       removeEntityGroup(pointEntities);
       removeEntityGroup(addPointEntities);
       removeEntityGroup(guideLineEntities);
@@ -1405,7 +1446,7 @@ export const CesiumMap = () => {
         viewer.entities.remove(deletePointEntity);
       }
     };
-  }, [activeMissionId, kmlEditMode, showWaypointHeightGuides, updateMission]);
+  }, [activeMissionId, kmlEditMode, updateMission]);
 
   // AOI draw mode: click points, live preview line, right-click to finish polygon
   useEffect(() => {

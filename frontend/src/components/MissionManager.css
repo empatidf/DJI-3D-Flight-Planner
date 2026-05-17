@@ -284,6 +284,146 @@
   font-weight: 600;
 }
 
+/* Import Mission Button */
+.btn-import-mission {
+  background: #17a2b8;
+  color: white;
+}
+
+.btn-import-mission:hover {
+  background: #138496;
+  transform: translateY(-1px);
+}
+
+/* Import Error Banner */
+.import-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fff3f3;
+  border-left: 3px solid #dc3545;
+  font-size: 12px;
+  color: #dc3545;
+  animation: slideDown 0.2s ease;
+}
+
+.import-error button {
+  background: none;
+  border: none;
+  color: #dc3545;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+  padding: 2px;
+  line-height: 1;
+}
+
+.import-error button:hover {
+  opacity: 0.7;
+}
+
+/* Three-dot menu button (visible on hover / when active) */
+.btn-menu {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 18px;
+  color: #6c757d;
+  border-radius: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  line-height: 1;
+  letter-spacing: 1px;
+}
+
+.mission-item:hover .btn-menu,
+.mission-item.active .btn-menu {
+  opacity: 1;
+}
+
+.btn-menu:hover {
+  background: #e9ecef;
+  color: #212529;
+}
+
+/* Context Menu Backdrop */
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+}
+
+/* Context Menu */
+.context-menu {
+  background: white;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  min-width: 160px;
+  overflow: hidden;
+  animation: menuFadeIn 0.12s ease;
+}
+
+@keyframes menuFadeIn {
+  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);    }
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  color: #212529;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.context-menu button:hover {
+  background: #f8f9fa;
+}
+
+.context-menu button.danger {
+  color: #dc3545;
+}
+
+.context-menu button.danger:hover {
+  background: #fff5f5;
+}
+
+.menu-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: #e9ecef;
+  margin: 4px 0;
+}
+
+/* Inline Rename Input */
+.rename-input {
+  flex: 1;
+  padding: 3px 6px;
+  border: 2px solid #667eea;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+  min-width: 0;
+}
+
 /* Responsive */
 @media (max-width: 1024px) {
   .mission-manager {
