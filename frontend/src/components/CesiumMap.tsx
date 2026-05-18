@@ -56,6 +56,18 @@ export const CesiumMap = () => {
     lon: 0,
     lat: 0,
   });
+  const [cropMenuState, setCropMenuState] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
+  const [cropUndoData, setCropUndoData] = useState<number[][] | null>(null);
+  const [pointInfoState, setPointInfoState] = useState<{
+    x: number; y: number;
+    index: number; lon: number; lat: number;
+    altitude: number; terrainHeight: number; agl: number; djiRelativeHeight: number;
+  } | null>(null);
+  const cropCallbackRef = useRef<{
+    perform: (pointIndex: number) => void;
+    undo: (snapshot: number[][]) => void;
+    getPointInfo: (pointIndex: number) => { index: number; lon: number; lat: number; altitude: number; terrainHeight: number; agl: number; djiRelativeHeight: number } | null;
+  } | null>(null);
   const editCoordinatesRef = useRef<number[][] | null>(null);
   const editAltitudeRef = useRef<number>(100);
   const editActiveMissionIdRef = useRef<string | null>(null);
@@ -63,6 +75,8 @@ export const CesiumMap = () => {
   const drawPointsRef = useRef<number[][]>([]);
   const drawHoverRef = useRef<number[] | null>(null);
   const suppressNextContextMenuRef = useRef<boolean>(false);
+  const cropUndoDataRef = useRef<number[][] | null>(null);
+  cropUndoDataRef.current = cropUndoData;
   const missionAoiRenderVersionRef = useRef<number>(0);
   const missionAoiTerrainCacheRef = useRef<Record<string, { coordKey: string; baseHeights: number[] }>>({});
   const lastAutoFocusedMissionIdRef = useRef<string | null>(null);
@@ -1269,6 +1283,42 @@ export const CesiumMap = () => {
       }
     };
 
+    cropCallbackRef.current = {
+      perform: (pointIndex: number) => {
+        const coords = editCoordinates.current;
+        if (pointIndex <= 0 || pointIndex >= coords.length) return;
+        const snapshot = coords.map((c) => [...c]);
+        setCropUndoData(snapshot);
+        editCoordinates.current = [coords[0], ...coords.slice(pointIndex)];
+        selectedPointIndex = 0;
+        rebuildEditHandles();
+        persistCoordinatesToStore();
+        viewer.scene.requestRender();
+      },
+      undo: (snapshot: number[][]) => {
+        editCoordinates.current = snapshot.map((c) => [...c]);
+        selectedPointIndex = null;
+        rebuildEditHandles();
+        persistCoordinatesToStore();
+        viewer.scene.requestRender();
+      },
+      getPointInfo: (pointIndex: number) => {
+        const coords = editCoordinates.current;
+        const coord = coords[pointIndex];
+        if (!coord) return null;
+        const terrainH = getTerrainHeightAt(coord);
+        return {
+          index: pointIndex,
+          lon: coord[0],
+          lat: coord[1],
+          altitude: Number.isFinite(coord[2]) ? coord[2] : missionAltitude,
+          terrainHeight: terrainH,
+          agl: (Number.isFinite(coord[2]) ? coord[2] : missionAltitude) - terrainH,
+          djiRelativeHeight: getDjiRelativeHeightAt(pointIndex),
+        };
+      },
+    };
+
     rebuildEditHandles();
 
     const appendHoverRef = { current: null as number[] | null };
@@ -1400,13 +1450,34 @@ export const CesiumMap = () => {
       viewer.scene.requestRender();
     }, ScreenSpaceEventType.LEFT_CLICK);
 
-    handler.setInputAction(() => {
-      if (!getIsAppendMode()) return;
-      suppressNextContextMenuRef.current = true;
-      appendHoverRef.current = null;
-      selectedPointIndex = null;
-      rebuildEditHandles();
-      viewer.scene.requestRender();
+    handler.setInputAction((event: { position: Cartesian2 }) => {
+      const picked = viewer.scene.pick(event.position) as { id?: Entity } | undefined;
+
+      // Right-click on any waypoint point → context menu
+      if (picked?.id && typeof picked.id.id === 'string') {
+        const pointMatch = picked.id.id.match(new RegExp(`^wp-edit-point-${activeMissionId}-(\\d+)$`));
+        if (pointMatch) {
+          suppressNextContextMenuRef.current = true;
+          setCropMenuState({ x: event.position.x, y: event.position.y, pointIndex: Number(pointMatch[1]) });
+          return;
+        }
+      }
+
+      // Right-click while in append mode → exit append mode
+      if (getIsAppendMode()) {
+        suppressNextContextMenuRef.current = true;
+        appendHoverRef.current = null;
+        selectedPointIndex = null;
+        rebuildEditHandles();
+        viewer.scene.requestRender();
+        return;
+      }
+
+      // Any other right-click after a crop → show undo-only menu
+      if (cropUndoDataRef.current) {
+        suppressNextContextMenuRef.current = true;
+        setCropMenuState({ x: event.position.x, y: event.position.y, pointIndex: -1 });
+      }
     }, ScreenSpaceEventType.RIGHT_CLICK);
 
     const stopDrag = () => {
@@ -1435,6 +1506,10 @@ export const CesiumMap = () => {
     return () => {
       handler.destroy();
       document.removeEventListener('keydown', handleKeyDown);
+      cropCallbackRef.current = null;
+      setCropMenuState(null);
+      setCropUndoData(null);
+      setPointInfoState(null);
       setNavigationEnabled(true);
       viewer.entities.remove(lineEntity);
       viewer.entities.remove(appendPreviewEntity);
@@ -2146,6 +2221,128 @@ export const CesiumMap = () => {
             {contextMenuState.lat.toFixed(7)}, {contextMenuState.lon.toFixed(7)}
           </div>
         </div>
+      )}
+      {cropMenuState && (
+        <div
+          className="map-context-menu"
+          style={{ left: `${cropMenuState.x}px`, top: `${cropMenuState.y}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {cropMenuState.pointIndex > 0 && (
+            <button
+              type="button"
+              className="map-context-menu-item"
+              onClick={() => {
+                cropCallbackRef.current?.perform(cropMenuState.pointIndex);
+                setCropMenuState(null);
+              }}
+            >
+              ✂ Crop from here
+            </button>
+          )}
+          {cropUndoData && (
+            <button
+              type="button"
+              className="map-context-menu-item"
+              onClick={() => {
+                cropCallbackRef.current?.undo(cropUndoData);
+                setCropUndoData(null);
+                setCropMenuState(null);
+              }}
+            >
+              ↩ Undo Crop
+            </button>
+          )}
+          {cropMenuState.pointIndex >= 0 && (
+            <>
+              <button
+                type="button"
+                className="map-context-menu-item"
+                onClick={() => {
+                  const info = cropCallbackRef.current?.getPointInfo(cropMenuState.pointIndex);
+                  if (info) {
+                    const panelWidth = 260;
+                    const safeX =
+                      cropMenuState.x + panelWidth + 12 > window.innerWidth
+                        ? cropMenuState.x - panelWidth - 12
+                        : cropMenuState.x + 12;
+                    const safeY = Math.min(cropMenuState.y, window.innerHeight - 220);
+                    setPointInfoState({ x: safeX, y: safeY, ...info });
+                  }
+                  setCropMenuState(null);
+                }}
+              >
+                ℹ Info
+              </button>
+              <button
+                type="button"
+                className="map-context-menu-item"
+                onClick={() => {
+                  const info = cropCallbackRef.current?.getPointInfo(cropMenuState.pointIndex);
+                  if (info) {
+                    navigator.clipboard.writeText(`${info.lat.toFixed(7)},${info.lon.toFixed(7)}`);
+                  }
+                  setCropMenuState(null);
+                }}
+              >
+                ⎘ Copy Coordinates
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="map-context-menu-item"
+            onClick={() => setCropMenuState(null)}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {pointInfoState && (
+        <div
+          className="point-info-panel"
+          style={{ left: `${pointInfoState.x}px`, top: `${pointInfoState.y}px` }}
+        >
+          <div className="point-info-header">
+            <span>Point #{pointInfoState.index + 1}</span>
+            <button type="button" onClick={() => setPointInfoState(null)}>✕</button>
+          </div>
+          <div className="point-info-row">
+            <span className="point-info-label">Lat</span>
+            <span className="point-info-value">{pointInfoState.lat.toFixed(7)}°</span>
+          </div>
+          <div className="point-info-row">
+            <span className="point-info-label">Lon</span>
+            <span className="point-info-value">{pointInfoState.lon.toFixed(7)}°</span>
+          </div>
+          <div className="point-info-row">
+            <span className="point-info-label">Flight Alt</span>
+            <span className="point-info-value">{pointInfoState.altitude.toFixed(1)} m</span>
+          </div>
+          <div className="point-info-row">
+            <span className="point-info-label">Terrain</span>
+            <span className="point-info-value">{pointInfoState.terrainHeight.toFixed(1)} m</span>
+          </div>
+          <div className="point-info-row">
+            <span className="point-info-label">AGL</span>
+            <span className="point-info-value">{pointInfoState.agl.toFixed(1)} m</span>
+          </div>
+          <div className="point-info-row">
+            <span className="point-info-label">DJI Rel. Height</span>
+            <span className="point-info-value">{pointInfoState.djiRelativeHeight.toFixed(1)} m</span>
+          </div>
+        </div>
+      )}
+      {cropUndoData && (
+        <button
+          className="waypoint-undo-crop-btn"
+          onClick={() => {
+            cropCallbackRef.current?.undo(cropUndoData);
+            setCropUndoData(null);
+          }}
+        >
+          ↩ Undo Crop
+        </button>
       )}
     </div>
   );

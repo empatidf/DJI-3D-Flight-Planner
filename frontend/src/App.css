@@ -135,3 +135,98 @@ body {
   color: rgba(255, 255, 255, 0.86);
   font-size: 12px;
 }
+
+.waypoint-undo-crop-btn {
+  position: absolute;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 24, 31, 0.92);
+  border: 1px solid rgba(255, 165, 0, 0.7);
+  border-radius: 8px;
+  padding: 10px 22px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 1000;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  animation: undoBtnFadeIn 0.18s ease;
+}
+
+.waypoint-undo-crop-btn:hover {
+  background: rgba(30, 34, 42, 0.97);
+  border-color: rgba(255, 165, 0, 1);
+}
+
+@keyframes undoBtnFadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0);    }
+}
+
+.point-info-panel {
+  position: fixed;
+  width: 260px;
+  background: rgba(20, 24, 31, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 0;
+  z-index: 1100;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  animation: pointInfoFadeIn 0.15s ease;
+}
+
+@keyframes pointInfoFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.point-info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.point-info-header button {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.point-info-header button:hover {
+  color: #fff;
+}
+
+.point-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.point-info-row:last-child {
+  border-bottom: none;
+}
+
+.point-info-label {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+}
+
+.point-info-value {
+  color: #fff;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+}
