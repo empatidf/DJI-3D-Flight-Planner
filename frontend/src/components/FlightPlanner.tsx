@@ -11,6 +11,7 @@ import { importKMLFile, importWaypointKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
 import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints } from '../lib/terrain-sampler';
 import { exportToDJI, downloadKMZ } from '../lib/dji-wpml-exporter';
+import { calculateDistance } from '../lib/coordinate-transform';
 import './FlightPlanner.css';
 
 export const FlightPlanner = () => {
@@ -1592,7 +1593,7 @@ export const FlightPlanner = () => {
               <span className="result-label">Flight Lines:</span>
               <span className="result-value">{activeMission.flightLines.length}</span>
             </div>
-            
+
             <div className="result-item">
               <span className="result-label">Photo Points:</span>
               <span className="result-value">
@@ -1606,6 +1607,36 @@ export const FlightPlanner = () => {
                 {activeMission.flightLines.reduce((sum, line) => sum + line.coordinates.length, 0)}
               </span>
             </div>
+
+            {(() => {
+              const allCoords = activeMission.flightLines.flatMap((line) => line.coordinates);
+              const totalDist = allCoords.slice(1).reduce(
+                (sum, coord, i) => sum + calculateDistance(allCoords[i], coord),
+                0
+              );
+              const speed = activeMission.parameters.speed;
+              const totalSec = speed > 0 ? Math.round(totalDist / speed) : 0;
+              const mins = Math.floor(totalSec / 60);
+              const secs = totalSec % 60;
+              return (
+                <>
+                  <div className="result-item">
+                    <span className="result-label">Total Distance:</span>
+                    <span className="result-value">
+                      {totalDist >= 1000
+                        ? `${(totalDist / 1000).toFixed(2)} km`
+                        : `${totalDist.toFixed(0)} m`}
+                    </span>
+                  </div>
+                  <div className="result-item">
+                    <span className="result-label">Est. Flight Time:</span>
+                    <span className="result-value">
+                      {mins > 0 ? `${mins} min ${secs} sec` : `${secs} sec`}
+                    </span>
+                  </div>
+                </>
+              );
+            })()}
 
             <div className="result-item">
               <span className="result-label">Mission Status:</span>
