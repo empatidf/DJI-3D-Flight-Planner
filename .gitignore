@@ -1,6 +1,9 @@
 # Test data (not for distribution)
 test-data/
 
+# Cloud API documentation (local only)
+Cloud-API-Doc/
+
 # Local drone/camera profile files
 drone-camera-profiles/
 
