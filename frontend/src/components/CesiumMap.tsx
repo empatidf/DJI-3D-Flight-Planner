@@ -768,8 +768,9 @@ export const CesiumMap = () => {
 
     const missionAltitude = activeMission.parameters.altitude;
     const initialCoordinates = activeMission.aoi.coordinates.map((coord) => {
-      const altitude = Number.isFinite(coord[2]) ? coord[2] : missionAltitude;
-      return [coord[0], coord[1], altitude];
+      const globeHeight = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
+      const base = typeof globeHeight === 'number' && Number.isFinite(globeHeight) ? globeHeight : 0;
+      return [coord[0], coord[1], base + missionAltitude];
     });
 
     editCoordinatesRef.current = initialCoordinates;
@@ -974,6 +975,19 @@ export const CesiumMap = () => {
     };
 
     rebuildEditHandles();
+
+    // Async terrain refinement: replace globe-height approximation with accurate sampled heights
+    const refineEditOverlayWithTerrain = async () => {
+      const waypointsForSampling = activeMission.aoi!.coordinates.map((coord) => [coord[0], coord[1], missionAltitude]);
+      const terrainPoints = await sampleTerrainForWaypoints(viewer, waypointsForSampling, missionAltitude);
+      if (editCoordinatesRef.current === null) return;
+      editCoordinatesRef.current = terrainPoints.map((coord) => [coord[0], coord[1], coord[2]]);
+      rebuildEditHandles();
+      viewer.scene.requestRender();
+    };
+    refineEditOverlayWithTerrain().catch((error) => {
+      console.error('Failed to terrain-adjust KML edit overlay:', error);
+    });
 
     let draggingPointIndex: number | null = null;
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
