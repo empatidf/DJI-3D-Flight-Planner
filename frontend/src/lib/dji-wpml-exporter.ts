@@ -36,6 +36,18 @@ const formatWpmlFloat = (value: unknown, fallback: number, maxDecimals = 2): str
 };
 
 /**
+ * Wrap a yaw/heading angle into DJI Pilot 2's accepted range of [-180, 180].
+ * DJI treats 0 as center, so e.g. 270 must be sent as -90. Values outside this
+ * range are rejected by DJI Pilot 2 and will not upload to the aircraft.
+ */
+export const normalizeYaw = (value: unknown, fallback = 0): number => {
+  const parsed = parseWpmlFloat(value, fallback);
+  const wrapped = ((parsed + 180) % 360 + 360) % 360 - 180;
+  // Map the -180 boundary to +180 to match DJI's convention and avoid -0.
+  return wrapped === -180 ? 180 : wrapped;
+};
+
+/**
  * Export mission to DJI WPML KMZ format
  */
 export const exportToDJI = async (mission: Mission): Promise<Blob> => {
@@ -175,7 +187,7 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
       : '';
 
   const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
-  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
+  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : normalizeYaw(parameters.droneYaw);
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NAMESPACE}">
@@ -245,13 +257,10 @@ const generateWaypointXML = (
   totalWaypoints: number
 ): string => {
   const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
-  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
+  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : normalizeYaw(parameters.droneYaw);
   const useAutoGimbalYaw = parameters.waypointAutoGimbalYaw ?? true;
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
-  // Coordinated-turn damping distance: how far before the waypoint the aircraft
-  // starts turning. Scales with speed so the turn arc fits between waypoints.
-  const speed = parseWpmlFloat(parameters.speed, 8);
-  const dampingDist = formatWpmlFloat(Math.min(2, Math.max(0.5, speed * 0.5)), 2, 1);
+  const dampingDist = formatWpmlFloat(parameters.waypointTurnDistance ?? 0.5, 0.5, 2);
 
   const actions: string[] = [];
   let actionId = 0;
@@ -267,7 +276,7 @@ const generateWaypointXML = (
             <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
             <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
             <wpml:gimbalYawRotateEnable>${useAutoGimbalYaw ? 0 : 1}</wpml:gimbalYawRotateEnable>
-            <wpml:gimbalYawRotateAngle>${useAutoGimbalYaw ? 0 : (parameters.gimbalYaw ?? 0)}</wpml:gimbalYawRotateAngle>
+            <wpml:gimbalYawRotateAngle>${useAutoGimbalYaw ? 0 : normalizeYaw(parameters.gimbalYaw)}</wpml:gimbalYawRotateAngle>
             <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
             <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
             <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
@@ -358,9 +367,8 @@ const generateTemplateWaypointXML = (
 ): string => {
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
   const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
-  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : (parameters.droneYaw ?? 0);
-  const speed = parseWpmlFloat(parameters.speed, 8);
-  const dampingDist = formatWpmlFloat(Math.min(2, Math.max(0.5, speed * 0.5)), 2, 1);
+  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : normalizeYaw(parameters.droneYaw);
+  const dampingDist = formatWpmlFloat(parameters.waypointTurnDistance ?? 0.5, 0.5, 2);
 
   return `    <Placemark>
       <Point>

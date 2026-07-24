@@ -9,8 +9,8 @@ import { calculateFlightPlan } from '../lib/flight-calculations';
 import { useMissionStore } from '../stores/mission-store';
 import { importKMLFile, importWaypointKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
-import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints } from '../lib/terrain-sampler';
-import { exportToDJI, downloadKMZ } from '../lib/dji-wpml-exporter';
+import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints, decimateByElevationTolerance } from '../lib/terrain-sampler';
+import { exportToDJI, downloadKMZ, normalizeYaw } from '../lib/dji-wpml-exporter';
 import { calculateDistance } from '../lib/coordinate-transform';
 import './FlightPlanner.css';
 
@@ -25,6 +25,8 @@ export const FlightPlanner = () => {
   const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
   const drawWaypointMode = useMissionStore((state) => state.drawWaypointMode);
   const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
+  const addTakeoffPointMode = useMissionStore((state) => state.addTakeoffPointMode);
+  const setAddTakeoffPointMode = useMissionStore((state) => state.setAddTakeoffPointMode);
   const showAreaHeightGuides = useMissionStore((state) => state.showAreaHeightGuides);
   const setShowAreaHeightGuides = useMissionStore((state) => state.setShowAreaHeightGuides);
   const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
@@ -48,9 +50,12 @@ export const FlightPlanner = () => {
   const [waypointHoverTime, setWaypointHoverTime] = useState<number>(2);
   const [waypointAutoDroneHeading, setWaypointAutoDroneHeading] = useState<boolean>(true);
   const [waypointAutoGimbalYaw, setWaypointAutoGimbalYaw] = useState<boolean>(true);
+  const [waypointTurnDistance, setWaypointTurnDistance] = useState<number>(0.5);
   const [alwaysTerrainFollow, setAlwaysTerrainFollow] = useState<boolean>(false);
   const [terrainFollowAccuracy, setTerrainFollowAccuracy] = useState<number>(2);
   const [terrainFollowMinDist, setTerrainFollowMinDist] = useState<number>(2);
+  const [elevationToleranceEnabled, setElevationToleranceEnabled] = useState<boolean>(false);
+  const [elevationTolerance, setElevationTolerance] = useState<number>(1);
   const [isTerrainCalculating, setIsTerrainCalculating] = useState<boolean>(false);
   const [terrainCalcProgress, setTerrainCalcProgress] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -103,6 +108,20 @@ export const FlightPlanner = () => {
           terrainWaypoints = waypoints;
         }
 
+        // Elevation Tolerance (area-only): skip redundant points on flat terrain to keep the
+        // point count low (avoids DJI Pilot 2 freezing). Runs on the standard 1:1 sampled path,
+        // so photo points map cleanly back to the original waypoint actions by index.
+        if (elevationToleranceEnabled && !alwaysTerrainFollow && terrainWaypoints.length === waypoints.length) {
+          const keep = decimateByElevationTolerance(terrainWaypoints, elevationTolerance);
+          return {
+            id: line.id,
+            coordinates: keep.map((i) => terrainWaypoints[i]),
+            photoPoints: keep
+              .filter((i) => line.waypoints[i]?.action === 'photo')
+              .map((i) => terrainWaypoints[i]),
+          };
+        }
+
         // For photo points, use the original waypoint indices mapped to the terrain-adjusted array.
         // When sub-sampling is active, the array is larger, so we identify photo points
         // by matching the original photo waypoint positions to the nearest point in the result.
@@ -139,6 +158,15 @@ export const FlightPlanner = () => {
         };
       })
     );
+
+    // Prepend takeoff point as first waypoint of the first flight line (no photo action)
+    const takeoffPoint = useMissionStore.getState().missions.find(m => m.id === activeMissionId)?.takeoffPoint ?? null;
+    if (takeoffPoint && convertedLines.length > 0) {
+      convertedLines[0] = {
+        ...convertedLines[0],
+        coordinates: [takeoffPoint, ...convertedLines[0].coordinates],
+      };
+    }
 
     const calculatedPlan = calculateFlightPlan(
       selectedCamera,
@@ -213,9 +241,12 @@ export const FlightPlanner = () => {
       setWaypointHoverTime(activeMission.parameters.waypointHoverTime ?? 2);
       setWaypointAutoDroneHeading(activeMission.parameters.waypointAutoDroneHeading ?? true);
       setWaypointAutoGimbalYaw(activeMission.parameters.waypointAutoGimbalYaw ?? true);
+      setWaypointTurnDistance(activeMission.parameters.waypointTurnDistance ?? 0.5);
       setAlwaysTerrainFollow(activeMission.parameters.alwaysTerrainFollow ?? false);
       setTerrainFollowAccuracy(activeMission.parameters.terrainFollowAccuracy ?? 2);
       setTerrainFollowMinDist(activeMission.parameters.terrainFollowMinDist ?? 2);
+      setElevationToleranceEnabled(activeMission.parameters.elevationToleranceEnabled ?? false);
+      setElevationTolerance(activeMission.parameters.elevationTolerance ?? 1);
     }
   }, [activeMissionId]);
 
@@ -319,6 +350,8 @@ export const FlightPlanner = () => {
     forwardOverlap,
     sideOverlap,
     flightAngle,
+    elevationToleranceEnabled,
+    elevationTolerance,
     updateMission,
   ]);
 
@@ -363,12 +396,15 @@ export const FlightPlanner = () => {
         waypointHoverTime,
         waypointAutoDroneHeading,
         waypointAutoGimbalYaw,
+        waypointTurnDistance,
         alwaysTerrainFollow,
         terrainFollowAccuracy,
         terrainFollowMinDist,
+        elevationToleranceEnabled,
+        elevationTolerance,
       },
     });
-    
+
     setStatusMessage('Flight parameters saved!');
     setTimeout(() => setStatusMessage(''), 3000);
   };
@@ -378,7 +414,16 @@ export const FlightPlanner = () => {
 
     if (!activeMissionId) return;
 
+    // Keep takeoff point altitude in sync: terrain base stays, only AGL changes
+    const takeoffPointUpdate: { takeoffPoint?: number[] } = {};
+    if (activeMission?.takeoffPoint) {
+      const [lon, lat, oldAlt] = activeMission.takeoffPoint;
+      const terrainBase = oldAlt - altitude; // altitude is still old value here
+      takeoffPointUpdate.takeoffPoint = [lon, lat, terrainBase + newAltitude];
+    }
+
     updateMission(activeMissionId, {
+      ...takeoffPointUpdate,
       parameters: {
         altitude: newAltitude,
         speed,
@@ -394,9 +439,12 @@ export const FlightPlanner = () => {
         waypointHoverTime,
         waypointAutoDroneHeading,
         waypointAutoGimbalYaw,
+        waypointTurnDistance,
         alwaysTerrainFollow,
         terrainFollowAccuracy,
         terrainFollowMinDist,
+        elevationToleranceEnabled,
+        elevationTolerance,
       },
     });
 
@@ -494,6 +542,7 @@ export const FlightPlanner = () => {
             name: firstPolygon.name,
           },
           flightLines: [],
+          takeoffPoint: null, // reset on new import
         });
 
         // Calculate center and bounding box for camera positioning
@@ -524,8 +573,9 @@ export const FlightPlanner = () => {
           roll: 0,
         });
 
-        setStatusMessage(`KML imported: ${firstPolygon.name}`);
-        setTimeout(() => setStatusMessage(''), 3000); // Clear after 3 seconds
+        setStatusMessage(`KML imported: ${firstPolygon.name} — click map to set takeoff point`);
+        setTimeout(() => setStatusMessage(''), 6000);
+        setAddTakeoffPointMode(true);
       };
       input.click();
     } catch (error) {
@@ -692,6 +742,7 @@ export const FlightPlanner = () => {
     updateMission(activeMissionId, {
       aoi: null,
       flightLines: [],
+      takeoffPoint: null,
     });
     setStatusMessage('KML area deleted.');
     setTimeout(() => setStatusMessage(''), 3000);
@@ -707,6 +758,12 @@ export const FlightPlanner = () => {
     if (!activeMissionId || !activeMission?.aoi) {
       setStatusMessage('Please import KML or draw an area first');
       setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    if (!activeMission.takeoffPoint) {
+      setStatusMessage('⚠ No takeoff point set — click "Add Takeoff Point" and click on the map');
+      setTimeout(() => setStatusMessage(''), 5000);
       return;
     }
 
@@ -998,6 +1055,17 @@ export const FlightPlanner = () => {
             <div className="status-message success">
               ✓ Area loaded: <strong>{activeMission.aoi.name}</strong>
             </div>
+            {activeMission.missionType === 'area' && (
+              activeMission.takeoffPoint ? (
+                <div className="status-message success" style={{ marginTop: '4px' }}>
+                  🛫 Takeoff point set
+                </div>
+              ) : (
+                <div className="status-message warning" style={{ marginTop: '4px' }}>
+                  ⚠ No takeoff point — set before generating plan
+                </div>
+              )
+            )}
             <div className="aoi-actions">
               <button className="btn-primary" onClick={handleImportKML}>
                 📂 Import Area Mission KML
@@ -1011,6 +1079,15 @@ export const FlightPlanner = () => {
               <button className="btn-primary" onClick={handleDrawAOI}>
                 {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw Mission Area'}
               </button>
+              {activeMission.missionType === 'area' && (
+                <button
+                  className={`btn-primary${addTakeoffPointMode ? ' btn-active-mode' : ''}`}
+                  onClick={() => setAddTakeoffPointMode(!addTakeoffPointMode)}
+                  title="Click this then click on map to set takeoff point"
+                >
+                  {addTakeoffPointMode ? '❌ Cancel' : activeMission.takeoffPoint ? '✏️ Edit Takeoff Point' : '🛫 Add Takeoff Point'}
+                </button>
+              )}
             </div>
             {activeMission.aoi && (
               <div className="mission-tools-line" aria-label="KML toolbar">
@@ -1075,6 +1152,15 @@ export const FlightPlanner = () => {
               <button className="btn-primary" onClick={handleDrawAOI}>
                 {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw Mission Area'}
               </button>
+              {activeMission?.missionType === 'area' && (
+                <button
+                  className={`btn-primary${addTakeoffPointMode ? ' btn-active-mode' : ''}`}
+                  onClick={() => setAddTakeoffPointMode(!addTakeoffPointMode)}
+                  title="Click this then click on map to set takeoff point"
+                >
+                  {addTakeoffPointMode ? '❌ Cancel' : activeMission.takeoffPoint ? '✏️ Edit Takeoff Point' : '🛫 Add Takeoff Point'}
+                </button>
+              )}
             </div>
 
             {activeMission?.missionType === 'waypoint' && activeMission.flightLines.length > 0 && (
@@ -1215,6 +1301,9 @@ export const FlightPlanner = () => {
           )}
         </label>
 
+        {/* Always Terrain Follow — hidden for AREA missions (their points are already terrain-sampled;
+            use Elevation Tolerance in section 4 instead). Kept for waypoint missions. */}
+        {activeMission?.missionType !== 'area' && (
         <div className="terrain-follow-settings">
           <label className="inline-toggle terrain-follow-toggle">
             <input
@@ -1305,6 +1394,7 @@ export const FlightPlanner = () => {
             </div>
           )}
         </div>
+        )}
       </section>
 
       {/* Photogrammetry Parameters */}
@@ -1400,6 +1490,53 @@ export const FlightPlanner = () => {
                   />
                   <span>Mission Realtime Update</span>
                 </label>
+
+                {/* Elevation Tolerance — area-only point reduction to avoid DJI Pilot 2 freezing.
+                    Keeps the overlap-based generation, then drops points on flat terrain. */}
+                <div className="terrain-follow-settings">
+                  <label className="inline-toggle terrain-follow-toggle">
+                    <input
+                      type="checkbox"
+                      checked={elevationToleranceEnabled}
+                      onChange={(e) => setElevationToleranceEnabled(e.target.checked)}
+                    />
+                    <span>Elevation Tolerance (reduce points)</span>
+                  </label>
+                  {elevationToleranceEnabled && (
+                    <div className="terrain-follow-info">
+                      <small style={{ color: '#94a3b8', display: 'block', marginBottom: '8px' }}>
+                        📉 Reduces point count by skipping waypoints on flat terrain, while keeping
+                        good terrain follow on slopes. Helps avoid freezing in DJI Pilot 2.
+                      </small>
+                      <label>
+                        Elevation Tolerance (m):
+                        <div className="range-control-row">
+                          <input
+                            className="range-number-input"
+                            type="number"
+                            value={elevationTolerance}
+                            onChange={(e) => setElevationTolerance(Number(e.target.value))}
+                            min="0.1"
+                            max="10"
+                            step="0.1"
+                          />
+                          <input
+                            className="range-slider-input"
+                            type="range"
+                            value={elevationTolerance}
+                            onChange={(e) => setElevationTolerance(Number(e.target.value))}
+                            min="0.1"
+                            max="10"
+                            step="0.1"
+                          />
+                        </div>
+                        <small style={{ color: '#94a3b8' }}>
+                          Skip a point unless its terrain elevation differs more than {elevationTolerance}m from the last kept point
+                        </small>
+                      </label>
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </>
@@ -1425,6 +1562,7 @@ export const FlightPlanner = () => {
                       type="number"
                       value={droneYaw}
                       onChange={(e) => setDroneYaw(Number(e.target.value))}
+                      onBlur={(e) => setDroneYaw(normalizeYaw(e.target.value))}
                       min="-180"
                       max="180"
                       step="1"
@@ -1461,6 +1599,7 @@ export const FlightPlanner = () => {
                       type="number"
                       value={gimbalYaw}
                       onChange={(e) => setGimbalYaw(Number(e.target.value))}
+                      onBlur={(e) => setGimbalYaw(normalizeYaw(e.target.value))}
                       min="-180"
                       max="180"
                       step="1"
@@ -1524,6 +1663,18 @@ export const FlightPlanner = () => {
                     />
                   </label>
                 )}
+
+                <label>
+                  Turn Distance (m):
+                  <input
+                    type="number"
+                    value={waypointTurnDistance}
+                    onChange={(e) => setWaypointTurnDistance(Number(e.target.value))}
+                    min="0"
+                    max="20"
+                    step="0.1"
+                  />
+                </label>
               </div>
             )}
           </>
