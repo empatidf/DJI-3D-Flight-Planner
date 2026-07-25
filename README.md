@@ -15,7 +15,7 @@ A web-based drone mission planning tool built with **CesiumJS** and **React**. P
 - **Waypoint Missions** — Import waypoint KML/KMZ or draw routes interactively; edit points on the map
 - **Photogrammetry Engine** — Real-time GSD, footprint, line spacing, photo interval, blur analysis, and speed calculations
 - **Terrain-Aware Planning** — AGL-based waypoint altitude adjustment using terrain sampling
-- **DJI Export** — Export missions as DJI Pilot 2 compatible KMZ/WPML packages
+- **DJI Export** — Export missions as DJI Pilot 2 compatible KMZ/WPML packages. Drone and gimbal yaw values are automatically normalized to DJI's accepted range of **-180° to +180°** (0 = center), so headings like 270° are exported as -90° instead of being rejected on upload.
 - **Drone & Camera Database** — Preloaded specs for DJI Mavic 3E, Matrice 300 RTK (P1, L2, PhaseOne P3), Matrice 4E, and Sony ILX-LR1
 - **Persistent State** — Missions, layers, Cesium token, camera position, and settings survive page reloads
 - **Right-Click Context Menu** — Copy clicked coordinates from anywhere on the map
