@@ -22,9 +22,12 @@ export interface FlightParameters {
   waypointHoverTime: number; // seconds
   waypointAutoDroneHeading: boolean;
   waypointAutoGimbalYaw: boolean;
+  waypointTurnDistance: number; // meters — damping distance for coordinate turns
   alwaysTerrainFollow: boolean; // when true, sub-sample terrain between waypoints
   terrainFollowAccuracy: number; // meters — insert sub-waypoint when elevation changes more than this
   terrainFollowMinDist: number; // meters — minimum horizontal distance between consecutive sub-waypoints
+  elevationToleranceEnabled: boolean; // area-only: when true, skip redundant points on flat terrain
+  elevationTolerance: number; // meters — keep a point only if terrain elevation differs this much from the last kept point
 }
 
 export interface AreaOfInterest {
@@ -47,6 +50,7 @@ export interface Mission {
   drone: DroneSpec;
   camera: CameraSpec;
   aoi: AreaOfInterest | null;
+  takeoffPoint: number[] | null; // [lon, lat, alt] — first waypoint of area mission
   parameters: FlightParameters;
   flightLines: FlightLine[];
   layerSnapshot?: Layer[];
@@ -91,6 +95,7 @@ interface MissionStore {
   kmlEditMode: boolean;
   drawAoiMode: boolean;
   drawWaypointMode: boolean;
+  addTakeoffPointMode: boolean;
   showAreaHeightGuides: boolean;
   showWaypointHeightGuides: boolean;
   layers: Layer[];
@@ -121,6 +126,7 @@ interface MissionStore {
   setKmlEditMode: (enabled: boolean) => void;
   setDrawAoiMode: (enabled: boolean) => void;
   setDrawWaypointMode: (enabled: boolean) => void;
+  setAddTakeoffPointMode: (enabled: boolean) => void;
   setShowAreaHeightGuides: (enabled: boolean) => void;
   setShowWaypointHeightGuides: (enabled: boolean) => void;
   setCesiumToken: (token: string) => void;
@@ -177,6 +183,7 @@ export const useMissionStore = create<MissionStore>()(
       kmlEditMode: false,
       drawAoiMode: false,
       drawWaypointMode: false,
+      addTakeoffPointMode: false,
       showAreaHeightGuides: false,
       showWaypointHeightGuides: false,
       layers: defaultLayers,
@@ -297,6 +304,10 @@ export const useMissionStore = create<MissionStore>()(
 
       setDrawWaypointMode: (enabled) => {
         set({ drawWaypointMode: enabled });
+      },
+
+      setAddTakeoffPointMode: (enabled) => {
+        set({ addTakeoffPointMode: enabled });
       },
 
       setShowAreaHeightGuides: (enabled) => {

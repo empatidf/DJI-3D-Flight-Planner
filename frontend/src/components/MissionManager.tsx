@@ -115,6 +115,7 @@ export const MissionManager = () => {
       drone: defaultDrone,
       camera: defaultCamera,
       aoi: null,
+      takeoffPoint: null,
       parameters: {
         altitude: 100,
         speed: 8,
@@ -133,6 +134,8 @@ export const MissionManager = () => {
         alwaysTerrainFollow: false,
         terrainFollowAccuracy: 2,
         terrainFollowMinDist: 5,
+        elevationToleranceEnabled: false,
+        elevationTolerance: 1,
       },
       flightLines: [],
       layerSnapshot: layers.map((layer) => ({ ...layer })),

@@ -93,6 +93,8 @@ export const CesiumMap = () => {
   const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
   const drawAoiMode = useMissionStore((state) => state.drawAoiMode);
   const drawWaypointMode = useMissionStore((state) => state.drawWaypointMode);
+  const addTakeoffPointMode = useMissionStore((state) => state.addTakeoffPointMode);
+  const setAddTakeoffPointMode = useMissionStore((state) => state.setAddTakeoffPointMode);
   const showAreaHeightGuides = useMissionStore((state) => state.showAreaHeightGuides);
   const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
   const updateMission = useMissionStore((state) => state.updateMission);
@@ -708,6 +710,7 @@ export const CesiumMap = () => {
         const terrainAdjustedPoints = await sampleTerrainForWaypoints(viewer, waypointsWithAltitude, missionAltitude);
 
         if (missionAoiRenderVersionRef.current !== renderVersion) return;
+        if (viewer.isDestroyed()) return;
 
         const entity = viewer.entities.getById(entityId);
         if (!entity?.polyline) return;
@@ -981,6 +984,7 @@ export const CesiumMap = () => {
       const waypointsForSampling = activeMission.aoi!.coordinates.map((coord) => [coord[0], coord[1], missionAltitude]);
       const terrainPoints = await sampleTerrainForWaypoints(viewer, waypointsForSampling, missionAltitude);
       if (editCoordinatesRef.current === null) return;
+      if (viewer.isDestroyed()) return;
       editCoordinatesRef.current = terrainPoints.map((coord) => [coord[0], coord[1], coord[2]]);
       rebuildEditHandles();
       viewer.scene.requestRender();
@@ -1623,9 +1627,11 @@ export const CesiumMap = () => {
           name: `Drawn Area ${new Date().toLocaleTimeString()}`,
         },
         flightLines: [],
+        takeoffPoint: null, // reset on new draw
       });
 
       setDrawAoiMode(false);
+      setAddTakeoffPointMode(true);
       viewer.scene.requestRender();
     }, ScreenSpaceEventType.RIGHT_CLICK);
 
@@ -1637,6 +1643,85 @@ export const CesiumMap = () => {
       drawHoverRef.current = null;
     };
   }, [activeMissionId, drawAoiMode, setDrawAoiMode, updateMission]);
+
+  // Add takeoff point mode: single click sets the takeoff position for area missions
+  useEffect(() => {
+    if (!viewerRef.current || !activeMissionId || !addTakeoffPointMode) return;
+
+    const viewer = viewerRef.current;
+
+    // Show a cursor overlay hint
+    viewer.canvas.style.cursor = 'crosshair';
+
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    handler.setInputAction(async (event: { position: Cartesian2 }) => {
+      const lonLat = getLonLatFromScreenPosition(viewer, event.position);
+      if (!lonLat) return;
+
+      // Terrain-sample the clicked point so altitude = terrain + AGL
+      const activeMission = useMissionStore.getState().missions.find(m => m.id === activeMissionId);
+      const agl = activeMission?.parameters.altitude ?? 0;
+      const sampled = await sampleTerrainForWaypoints(viewer, [[lonLat.lon, lonLat.lat, agl]], agl);
+      const alt = sampled[0]?.[2] ?? agl;
+
+      if (viewer.isDestroyed()) return;
+      updateMission(activeMissionId, { takeoffPoint: [lonLat.lon, lonLat.lat, alt] });
+      setAddTakeoffPointMode(false);
+      viewer.canvas.style.cursor = '';
+      viewer.scene.requestRender();
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
+    return () => {
+      handler.destroy();
+      viewer.canvas.style.cursor = '';
+    };
+  }, [activeMissionId, addTakeoffPointMode, setAddTakeoffPointMode, updateMission]);
+
+  // Render takeoff point entity for active area mission
+  useEffect(() => {
+    if (!viewerRef.current) return;
+    const viewer = viewerRef.current;
+    const entityId = `takeoff-point-${activeMissionId}`;
+
+    // Remove stale entity first
+    const stale = viewer.entities.getById(entityId);
+    if (stale) viewer.entities.remove(stale);
+
+    const activeMission = missions.find(m => m.id === activeMissionId);
+    if (!activeMission?.takeoffPoint || activeMission.missionType !== 'area' || !activeMission.visible) return;
+
+    const [lon, lat, alt] = activeMission.takeoffPoint;
+
+    viewer.entities.add({
+      id: entityId,
+      position: Cartesian3.fromDegrees(lon, lat, alt),
+      point: {
+        pixelSize: 14,
+        color: Color.YELLOW,
+        outlineColor: Color.BLACK,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text: '🛫 T',
+        font: 'bold 11px sans-serif',
+        fillColor: Color.YELLOW,
+        outlineColor: Color.BLACK,
+        outlineWidth: 2,
+        pixelOffset: new Cartesian2(14, 0),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    });
+
+    viewer.scene.requestRender();
+
+    return () => {
+      if (viewer.isDestroyed()) return;
+      const entity = viewer.entities.getById(entityId);
+      if (entity) viewer.entities.remove(entity);
+    };
+  }, [activeMissionId, missions]);
 
   // Waypoint draw mode: click points, live preview line, right-click to finish route
   useEffect(() => {

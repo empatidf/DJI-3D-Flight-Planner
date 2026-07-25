@@ -13,6 +13,43 @@ export interface WaypointPosition {
 }
 
 /**
+ * Decimate terrain-following waypoints by an elevation-difference threshold.
+ *
+ * Walks along the line and keeps a point only if its altitude differs from the
+ * last KEPT point by at least `toleranceM`. Comparing against the last kept point
+ * (rather than the immediate neighbour) bounds the cumulative terrain error to the
+ * tolerance, so flat stretches collapse to few points while slopes stay dense.
+ * Altitude = terrainHeight + constant AGL per line, so the altitude delta equals
+ * the terrain-elevation delta. The first and last points are always kept to
+ * preserve the line geometry.
+ *
+ * @param waypoints  - Terrain-following waypoints [[lon, lat, alt], ...]
+ * @param toleranceM - Elevation-difference threshold in meters
+ * @returns Indices (into `waypoints`) of the points to keep
+ */
+export const decimateByElevationTolerance = (
+  waypoints: number[][],
+  toleranceM: number
+): number[] => {
+  if (waypoints.length <= 2 || !(toleranceM > 0)) {
+    return waypoints.map((_, i) => i);
+  }
+
+  const kept = [0];
+  let lastAlt = waypoints[0][2];
+
+  for (let i = 1; i < waypoints.length - 1; i++) {
+    if (Math.abs(waypoints[i][2] - lastAlt) >= toleranceM) {
+      kept.push(i);
+      lastAlt = waypoints[i][2];
+    }
+  }
+
+  kept.push(waypoints.length - 1);
+  return kept;
+};
+
+/**
  * Sample terrain elevation at waypoint positions and adjust altitudes for terrain-following
  * @param viewer - Cesium viewer instance
  * @param waypoints - Array of waypoint coordinates [lon, lat, alt]
