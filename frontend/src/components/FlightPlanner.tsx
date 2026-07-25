@@ -32,6 +32,12 @@ export const FlightPlanner = () => {
   const setShowAreaHeightGuides = useMissionStore((state) => state.setShowAreaHeightGuides);
   const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
   const setShowWaypointHeightGuides = useMissionStore((state) => state.setShowWaypointHeightGuides);
+  const requestCollisionAnalysis = useMissionStore((state) => state.requestCollisionAnalysis);
+  const clearCollisionAnalysis = useMissionStore((state) => state.clearCollisionAnalysis);
+  const collisionStatus = useMissionStore((state) => state.collisionStatus);
+  const collisionRiskCount = useMissionStore((state) => state.collisionRiskCount);
+  const collisionProgress = useMissionStore((state) => state.collisionProgress);
+  const collisionEffInterval = useMissionStore((state) => state.collisionEffInterval);
 
   const activeMission = missions.find(m => m.id === activeMissionId);
 
@@ -55,6 +61,7 @@ export const FlightPlanner = () => {
   const [alwaysTerrainFollow, setAlwaysTerrainFollow] = useState<boolean>(false);
   const [terrainFollowAccuracy, setTerrainFollowAccuracy] = useState<number>(2);
   const [terrainFollowMinDist, setTerrainFollowMinDist] = useState<number>(2);
+  const [terrainFollowSkipPoints, setTerrainFollowSkipPoints] = useState<number>(1);
   const [elevationToleranceEnabled, setElevationToleranceEnabled] = useState<boolean>(false);
   const [elevationTolerance, setElevationTolerance] = useState<number>(1);
   const [isTerrainCalculating, setIsTerrainCalculating] = useState<boolean>(false);
@@ -64,6 +71,10 @@ export const FlightPlanner = () => {
   const [showDroneConfig, setShowDroneConfig] = useState<boolean>(true);
   const [showPhotogrammetry, setShowPhotogrammetry] = useState<boolean>(true);
   const [showWaypointSettings, setShowWaypointSettings] = useState<boolean>(true);
+  const [showCollisionAnalysis, setShowCollisionAnalysis] = useState<boolean>(false);
+  const [collisionThreshold, setCollisionThreshold] = useState<number>(2);
+  const [collisionInterval, setCollisionInterval] = useState<number>(0.1);
+  const [collisionSkipPoints, setCollisionSkipPoints] = useState<number>(0);
   const [realtimeFlightPreviewEnabled, setRealtimeFlightPreviewEnabled] = useState<boolean>(false);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState<boolean>(false);
 
@@ -102,7 +113,8 @@ export const FlightPlanner = () => {
         let terrainWaypoints: number[][];
         if (viewer && alwaysTerrainFollow) {
           // Terrain-follow mode: sub-sample between waypoints for true terrain following
-          terrainWaypoints = await sampleTerrainWithSubPoints(viewer, waypoints, altitude, terrainFollowAccuracy, terrainFollowMinDist);
+          // Area missions have no transit leg (points are generated on-site), so never skip.
+          terrainWaypoints = await sampleTerrainWithSubPoints(viewer, waypoints, altitude, terrainFollowAccuracy, terrainFollowMinDist, 0);
         } else if (viewer) {
           terrainWaypoints = await sampleTerrainForWaypoints(viewer, waypoints, altitude);
         } else {
@@ -246,6 +258,7 @@ export const FlightPlanner = () => {
       setAlwaysTerrainFollow(activeMission.parameters.alwaysTerrainFollow ?? false);
       setTerrainFollowAccuracy(activeMission.parameters.terrainFollowAccuracy ?? 2);
       setTerrainFollowMinDist(activeMission.parameters.terrainFollowMinDist ?? 2);
+      setTerrainFollowSkipPoints(activeMission.parameters.terrainFollowSkipPoints ?? 1);
       setElevationToleranceEnabled(activeMission.parameters.elevationToleranceEnabled ?? false);
       setElevationTolerance(activeMission.parameters.elevationTolerance ?? 1);
     }
@@ -401,6 +414,7 @@ export const FlightPlanner = () => {
         alwaysTerrainFollow,
         terrainFollowAccuracy,
         terrainFollowMinDist,
+        terrainFollowSkipPoints,
         elevationToleranceEnabled,
         elevationTolerance,
       },
@@ -444,6 +458,7 @@ export const FlightPlanner = () => {
         alwaysTerrainFollow,
         terrainFollowAccuracy,
         terrainFollowMinDist,
+        terrainFollowSkipPoints,
         elevationToleranceEnabled,
         elevationTolerance,
       },
@@ -455,13 +470,18 @@ export const FlightPlanner = () => {
       activeMission.flightLines[0].coordinates.length > 0
     ) {
       const firstLine = activeMission.flightLines[0];
-      const baseWaypoints = firstLine.coordinates.map((coord) => [coord[0], coord[1], newAltitude]);
+      const skipN = Math.max(0, Math.floor(terrainFollowSkipPoints || 0));
+      const baseWaypoints = firstLine.coordinates.map((coord, i) =>
+        i < skipN
+          ? [coord[0], coord[1], Number.isFinite(coord[2]) ? coord[2] : newAltitude]
+          : [coord[0], coord[1], newAltitude]
+      );
       const viewer = getCesiumViewer();
 
       const applyWaypointAltitude = async () => {
         let updatedWaypoints: number[][];
         if (viewer && alwaysTerrainFollow) {
-          updatedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, newAltitude, terrainFollowAccuracy, terrainFollowMinDist);
+          updatedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, newAltitude, terrainFollowAccuracy, terrainFollowMinDist, terrainFollowSkipPoints);
         } else if (viewer) {
           updatedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, newAltitude);
         } else {
@@ -610,10 +630,15 @@ export const FlightPlanner = () => {
         }
 
         const viewer = getCesiumViewer();
-        const baseWaypoints = waypointSet.coordinates.map((coord) => [coord[0], coord[1], altitude]);
+        const skipN = Math.max(0, Math.floor(terrainFollowSkipPoints || 0));
+        const baseWaypoints = waypointSet.coordinates.map((coord, i) =>
+          i < skipN
+            ? [coord[0], coord[1], Number.isFinite(coord[2]) ? coord[2] : altitude]
+            : [coord[0], coord[1], altitude]
+        );
         let terrainAdjustedWaypoints: number[][];
         if (viewer && alwaysTerrainFollow) {
-          terrainAdjustedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, altitude, terrainFollowAccuracy, terrainFollowMinDist);
+          terrainAdjustedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, altitude, terrainFollowAccuracy, terrainFollowMinDist, terrainFollowSkipPoints);
         } else if (viewer) {
           terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude);
         } else {
@@ -828,6 +853,7 @@ export const FlightPlanner = () => {
             alwaysTerrainFollow,
             terrainFollowAccuracy,
             terrainFollowMinDist,
+            terrainFollowSkipPoints,
           },
         });
         setFlightPlan(calculatedPlan);
@@ -840,7 +866,14 @@ export const FlightPlanner = () => {
         // Snapshot originals once — preserve existing snapshot if already set so
         // re-applying doesn't overwrite the true pre-terrain-follow waypoints.
         const originalCoordinates = firstLine.originalCoordinates ?? firstLine.coordinates;
-        const baseWaypoints = originalCoordinates.map((coord) => [coord[0], coord[1], altitude]);
+        // Skipped (transit) points keep their true original altitude; the rest get the
+        // AGL placeholder that terrain sampling replaces with terrainHeight + AGL.
+        const skipN = Math.max(0, Math.floor(terrainFollowSkipPoints || 0));
+        const baseWaypoints = originalCoordinates.map((coord, i) =>
+          i < skipN
+            ? [coord[0], coord[1], Number.isFinite(coord[2]) ? coord[2] : altitude]
+            : [coord[0], coord[1], altitude]
+        );
 
         setTerrainCalcProgress(`Sub-sampling terrain for ${baseWaypoints.length} waypoints...`);
         const updatedWaypoints = await sampleTerrainWithSubPoints(
@@ -848,7 +881,8 @@ export const FlightPlanner = () => {
           baseWaypoints,
           altitude,
           terrainFollowAccuracy,
-          terrainFollowMinDist
+          terrainFollowMinDist,
+          terrainFollowSkipPoints
         );
 
         updateMission(activeMissionId, {
@@ -865,6 +899,7 @@ export const FlightPlanner = () => {
             alwaysTerrainFollow,
             terrainFollowAccuracy,
             terrainFollowMinDist,
+            terrainFollowSkipPoints,
           },
         });
 
@@ -1379,7 +1414,24 @@ export const FlightPlanner = () => {
                   />
                 </div>
                 <small style={{ color: '#94a3b8' }}>
-                  Skip sub-waypoint if closer than {terrainFollowMinDist}m to the previous one
+                  Skip sub-waypoint if closer than {terrainFollowMinDist}m to the previous <strong>or next</strong> waypoint
+                </small>
+              </label>
+              <label>
+                Skip First Points:
+                <div className="range-control-row">
+                  <input
+                    className="range-number-input"
+                    type="number"
+                    value={terrainFollowSkipPoints}
+                    onChange={(e) => setTerrainFollowSkipPoints(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                    min="0"
+                    step="1"
+                    disabled={isTerrainCalculating}
+                  />
+                </div>
+                <small style={{ color: '#94a3b8' }}>
+                  Leave the first {terrainFollowSkipPoints} waypoint(s) untouched (transit leg before the mission area)
                 </small>
               </label>
               <button
@@ -1682,6 +1734,127 @@ export const FlightPlanner = () => {
                     step="0.1"
                   />
                 </label>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
+      {/* Step 6: Collision Analysis */}
+      <section className="planner-section">
+        <h3 className="section-title-row" onClick={() => setShowCollisionAnalysis(!showCollisionAnalysis)}>
+          6. Collision Analysis <span>{showCollisionAnalysis ? '▾' : '▸'}</span>
+        </h3>
+
+        {showCollisionAnalysis && (
+          <>
+            {!(activeMission?.flightLines && activeMission.flightLines.length > 0) ? (
+              <div className="status-message warning">
+                No flight line to analyze — import or draw a waypoint route first
+              </div>
+            ) : (
+              <div className="collision-analysis-layout">
+                <label className="waypoint-compact-field">
+                  Clearance threshold (m):
+                  <input
+                    type="number"
+                    value={collisionThreshold}
+                    onChange={(e) => setCollisionThreshold(Number(e.target.value))}
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                  />
+                </label>
+
+                <label className="waypoint-compact-field">
+                  Sample interval (m):
+                  <input
+                    type="number"
+                    value={collisionInterval}
+                    onChange={(e) => setCollisionInterval(Number(e.target.value))}
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                  />
+                </label>
+
+                <label className="waypoint-compact-field">
+                  Skip first points:
+                  <input
+                    type="number"
+                    value={collisionSkipPoints}
+                    onChange={(e) => setCollisionSkipPoints(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                    min="0"
+                    step="1"
+                  />
+                </label>
+
+                <p className="collision-hint">
+                  Checks the active yellow line's front/back/down envelope within the clearance
+                  radius against terrain. Risky sections turn <strong>red</strong>. Use
+                  <strong> Skip first points</strong> to ignore the transit leg before the mission area.
+                </p>
+
+                <div className="collision-actions">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={collisionStatus === 'running'}
+                    onClick={() => {
+                      const t = Math.min(10, Math.max(0.1, collisionThreshold || 0.1));
+                      const iv = Math.min(10, Math.max(0.1, collisionInterval || 0.1));
+                      const skip = Math.max(0, Math.floor(collisionSkipPoints || 0));
+                      requestCollisionAnalysis(t, iv, skip);
+                    }}
+                  >
+                    {collisionStatus === 'running' ? '⏳ Analyzing…' : '🛰️ Analyze Collision Risk'}
+                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => clearCollisionAnalysis()}>
+                    ✖ Clear
+                  </button>
+                </div>
+
+                {collisionStatus === 'running' && (
+                  <div
+                    className="collision-progress"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(collisionProgress * 100)}
+                  >
+                    <div
+                      className="collision-progress-bar"
+                      style={{ width: `${Math.round(collisionProgress * 100)}%` }}
+                    />
+                    <span className="collision-progress-label">
+                      {Math.round(collisionProgress * 100)}%
+                    </span>
+                  </div>
+                )}
+
+                {collisionStatus === 'done' && (
+                  <div className={`status-message ${collisionRiskCount > 0 ? 'warning' : 'success'}`}>
+                    {collisionRiskCount > 0
+                      ? `⚠ ${collisionRiskCount} risky sample point(s) — see red sections on the map`
+                      : '✓ No collision risk detected'}
+                    {collisionEffInterval > 0 && (
+                      <div className="collision-hint" style={{ marginTop: '4px' }}>
+                        Sampled every {collisionEffInterval.toFixed(2)} m.
+                        {collisionEffInterval > collisionThreshold + 0.001 && (
+                          <strong>
+                            {' '}⚠ Line too long to fully cover at this clearance — there may be gaps.
+                            Increase the clearance threshold, or split the route (use Skip first points).
+                          </strong>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {collisionStatus === 'error' && (
+                  <div className="status-message warning">
+                    Analysis failed — make sure a terrain layer is loaded
+                  </div>
+                )}
               </div>
             )}
           </>

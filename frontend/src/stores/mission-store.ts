@@ -26,6 +26,7 @@ export interface FlightParameters {
   alwaysTerrainFollow: boolean; // when true, sub-sample terrain between waypoints
   terrainFollowAccuracy: number; // meters — insert sub-waypoint when elevation changes more than this
   terrainFollowMinDist: number; // meters — minimum horizontal distance between consecutive sub-waypoints
+  terrainFollowSkipPoints?: number; // leading waypoints (transit leg) left untouched by terrain follow
   elevationToleranceEnabled: boolean; // area-only: when true, skip redundant points on flat terrain
   elevationTolerance: number; // meters — keep a point only if terrain elevation differs this much from the last kept point
 }
@@ -98,6 +99,12 @@ interface MissionStore {
   addTakeoffPointMode: boolean;
   showAreaHeightGuides: boolean;
   showWaypointHeightGuides: boolean;
+  // Collision analysis (transient — not persisted)
+  collisionRequest: { threshold: number; interval: number; skipPoints: number; nonce: number } | null;
+  collisionStatus: 'idle' | 'running' | 'done' | 'error';
+  collisionRiskCount: number;
+  collisionProgress: number; // 0..1
+  collisionEffInterval: number; // actual along-line spacing used (m)
   layers: Layer[];
   viewMode: 'SCENE2D' | 'SCENE3D' | 'COLUMBUS_VIEW';
   cameraTarget: CameraTarget | null;
@@ -127,6 +134,12 @@ interface MissionStore {
   setDrawAoiMode: (enabled: boolean) => void;
   setDrawWaypointMode: (enabled: boolean) => void;
   setAddTakeoffPointMode: (enabled: boolean) => void;
+  requestCollisionAnalysis: (threshold: number, interval: number, skipPoints: number) => void;
+  clearCollisionAnalysis: () => void;
+  setCollisionStatus: (status: 'idle' | 'running' | 'done' | 'error') => void;
+  setCollisionRiskCount: (count: number) => void;
+  setCollisionProgress: (progress: number) => void;
+  setCollisionEffInterval: (interval: number) => void;
   setShowAreaHeightGuides: (enabled: boolean) => void;
   setShowWaypointHeightGuides: (enabled: boolean) => void;
   setCesiumToken: (token: string) => void;
@@ -186,6 +199,11 @@ export const useMissionStore = create<MissionStore>()(
       addTakeoffPointMode: false,
       showAreaHeightGuides: false,
       showWaypointHeightGuides: false,
+      collisionRequest: null,
+      collisionStatus: 'idle',
+      collisionRiskCount: 0,
+      collisionProgress: 0,
+      collisionEffInterval: 0,
       layers: defaultLayers,
       cameraTarget: null,
       lastMapView: null,
@@ -308,6 +326,40 @@ export const useMissionStore = create<MissionStore>()(
 
       setAddTakeoffPointMode: (enabled) => {
         set({ addTakeoffPointMode: enabled });
+      },
+
+      requestCollisionAnalysis: (threshold, interval, skipPoints) => {
+        set((state) => ({
+          collisionRequest: {
+            threshold,
+            interval,
+            skipPoints,
+            nonce: (state.collisionRequest?.nonce ?? 0) + 1,
+          },
+          collisionStatus: 'running',
+          collisionRiskCount: 0,
+          collisionProgress: 0,
+        }));
+      },
+
+      clearCollisionAnalysis: () => {
+        set({ collisionRequest: null, collisionStatus: 'idle', collisionRiskCount: 0, collisionProgress: 0, collisionEffInterval: 0 });
+      },
+
+      setCollisionStatus: (status) => {
+        set({ collisionStatus: status });
+      },
+
+      setCollisionRiskCount: (count) => {
+        set({ collisionRiskCount: count });
+      },
+
+      setCollisionProgress: (progress) => {
+        set({ collisionProgress: progress });
+      },
+
+      setCollisionEffInterval: (interval) => {
+        set({ collisionEffInterval: interval });
       },
 
       setShowAreaHeightGuides: (enabled) => {

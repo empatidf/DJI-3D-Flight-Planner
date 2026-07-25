@@ -1,3 +1,3 @@
 // App version — simple incremental scheme.
 // Bump this ONE value on each release: 'v1' -> 'v2' -> 'v3' ...
-export const APP_VERSION = 'v1';
+export const APP_VERSION = 'v2';

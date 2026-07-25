@@ -243,8 +243,13 @@ export const terrainFollowSubSample = async (
 
   for (let i = 1; i < probePositions.length - 1; i++) {
     const heightDelta = Math.abs(probeHeights[i] - lastEmittedHeight);
+    // Distance from the PREVIOUS kept point (a prior sub-point or the segment start).
     const distFromLast = haversineDistance(lastEmittedLon, lastEmittedLat, probePositions[i].lon, probePositions[i].lat);
-    if (heightDelta >= accuracyM && distFromLast >= minDistM) {
+    // Distance to the NEXT original waypoint (segment end), which is always kept.
+    // Without this check a sub-point can land right next to an existing waypoint,
+    // producing two points closer than minDistM — which DJI Pilot 2 rejects.
+    const distToEnd = haversineDistance(probePositions[i].lon, probePositions[i].lat, endLon, endLat);
+    if (heightDelta >= accuracyM && distFromLast >= minDistM && distToEnd >= minDistM) {
       result.push([
         probePositions[i].lon,
         probePositions[i].lat,
@@ -280,6 +285,7 @@ export const terrainFollowSubSample = async (
  * @param aglAltitude  - Desired AGL altitude in meters
  * @param accuracyM    - Elevation change threshold in meters
  * @param minDistM     - Minimum horizontal distance (meters) between consecutive sub-waypoints
+ * @param skipPoints   - Leading waypoints to leave untouched (e.g. the transit leg before the site)
  * @returns New waypoint array with sub-waypoints inserted for terrain following
  */
 export const sampleTerrainWithSubPoints = async (
@@ -287,10 +293,11 @@ export const sampleTerrainWithSubPoints = async (
   waypoints: number[][],
   aglAltitude: number,
   accuracyM: number,
-  minDistM: number = 2
+  minDistM: number = 2,
+  skipPoints: number = 0
 ): Promise<number[][]> => {
   console.log('=== TERRAIN FOLLOW SUB-SAMPLING START ===');
-  console.log(`Input waypoints: ${waypoints.length}, AGL: ${aglAltitude}m, accuracy: ${accuracyM}m, minDist: ${minDistM}m`);
+  console.log(`Input waypoints: ${waypoints.length}, AGL: ${aglAltitude}m, accuracy: ${accuracyM}m, minDist: ${minDistM}m, skip: ${skipPoints}`);
 
   const terrainProvider = viewer.terrainProvider;
 
@@ -304,12 +311,17 @@ export const sampleTerrainWithSubPoints = async (
     return sampleTerrainForWaypoints(viewer, waypoints, aglAltitude);
   }
 
-  try {
-    const allPoints: number[][] = [];
+  // Leave the first N waypoints (transit leg) untouched; terrain-follow only the rest.
+  const skip = Math.min(Math.max(0, Math.floor(skipPoints)), Math.max(0, waypoints.length - 2));
+  const head = skip > 0 ? waypoints.slice(0, skip) : [];
+  const work = skip > 0 ? waypoints.slice(skip) : waypoints;
 
-    for (let i = 0; i < waypoints.length - 1; i++) {
-      const [lon1, lat1] = waypoints[i];
-      const [lon2, lat2] = waypoints[i + 1];
+  try {
+    const allPoints: number[][] = [...head];
+
+    for (let i = 0; i < work.length - 1; i++) {
+      const [lon1, lat1] = work[i];
+      const [lon2, lat2] = work[i + 1];
 
       const segmentPoints = await terrainFollowSubSample(
         viewer,
@@ -338,6 +350,219 @@ export const sampleTerrainWithSubPoints = async (
     console.warn('Falling back to standard terrain sampling');
     return sampleTerrainForWaypoints(viewer, waypoints, aglAltitude);
   }
+};
+
+export interface CollisionRiskResult {
+  segments: number[][][]; // each = [[lon,lat,alt], ...] a red sub-polyline over a risky stretch
+  riskyStationCount: number;
+  totalStations: number;
+  effIntervalM: number; // actual along-line spacing used (may be widened from the request)
+}
+
+/**
+ * Analyse collision risk of a flight line against terrain.
+ *
+ * The drone's safety envelope at each point is the LOWER HALF of a sphere of
+ * radius `thresholdM`: terrain in any horizontal direction (front, back, left,
+ * right, down) within that radius is a collision — including obstacles that rise
+ * ABOVE the drone, because such a column pierces the drone's altitude plane and
+ * therefore enters the lower hemisphere.
+ *
+ * Implementation: a corridor grid is sampled around the line — evenly spaced
+ * stations along the path × a set of lateral lanes (±½R, ±R perpendicular to
+ * travel) — so terrain to the sides is covered, not just the centreline. Terrain
+ * height is sampled in chunks (progress-reported, UI-friendly). For each drone
+ * station we test every grid sample within `thresholdM`: the vertical gap is
+ * CLAMPED to ≥0 (`max(0, droneAlt − terrainHeight)`) so a column taller than the
+ * drone counts as terrain at the drone's own altitude. Total samples are capped
+ * at `maxProbes`; the along-line spacing is widened only if that cap is hit.
+ *
+ * @param viewer         - Cesium Viewer (terrain provider)
+ * @param lineCoordinates- The yellow line [[lon,lat,alt], ...] at absolute altitudes
+ * @param thresholdM     - Minimum safe clearance / sphere radius in metres
+ * @param intervalM      - Requested along-line sample spacing in metres
+ * @param maxProbes      - Cap on total terrain samples (stations × lanes)
+ * @param fallbackAltitude - Altitude to use where a coordinate has no valid height
+ * @param skipPoints     - Number of leading waypoints to skip (e.g. long transit to the site)
+ * @param onProgress     - Optional 0..1 progress callback (reports terrain-sampling progress)
+ * @returns Red sub-polylines for the risky stretches (min 1 m each) plus counts
+ */
+export const analyzeCollisionRisk = async (
+  viewer: Viewer,
+  lineCoordinates: number[][],
+  thresholdM: number,
+  intervalM: number,
+  maxProbes = 400000,
+  fallbackAltitude = 0,
+  skipPoints = 0,
+  onProgress?: (fraction: number) => void
+): Promise<CollisionRiskResult> => {
+  const empty: CollisionRiskResult = { segments: [], riskyStationCount: 0, totalStations: 0, effIntervalM: 0 };
+
+  const validated = lineCoordinates
+    .filter((c) => Number.isFinite(c[0]) && Number.isFinite(c[1]))
+    .map((c) => [c[0], c[1], Number.isFinite(c[2]) ? c[2] : fallbackAltitude] as number[]);
+  // Skip the first N waypoints (transit leg) before analysing
+  const coords = validated.slice(Math.max(0, Math.floor(skipPoints)));
+  if (coords.length < 2) {
+    onProgress?.(1);
+    return empty;
+  }
+
+  // Cumulative horizontal distance at each vertex
+  const cum: number[] = [0];
+  for (let k = 0; k < coords.length - 1; k++) {
+    const d = haversineDistance(coords[k][0], coords[k][1], coords[k + 1][0], coords[k + 1][1]);
+    cum.push(cum[k] + d);
+  }
+  const totalLength = cum[cum.length - 1];
+  if (!(totalLength > 0)) return empty;
+
+  const R = Math.max(0.01, thresholdM);
+
+  // Lateral lanes perpendicular to travel: 0, ±R/2, ±R → covers the corridor width.
+  const laneStep = R / 2;
+  const laneOffsets: number[] = [];
+  for (let k = -2; k <= 2; k++) laneOffsets.push(k * laneStep);
+  const nLanes = laneOffsets.length;
+
+  // Along-line spacing must not exceed the clearance R, or detection windows leave
+  // gaps between them. Honour a finer requested interval, but never a coarser one.
+  // Widen only if the total (stations × lanes) would still exceed maxProbes.
+  let effInterval = Math.max(0.05, Math.min(intervalM, R));
+  let nA = Math.max(2, Math.floor(totalLength / effInterval) + 1);
+  if (nA * nLanes > maxProbes) {
+    nA = Math.max(2, Math.floor(maxProbes / nLanes));
+    effInterval = totalLength / (nA - 1);
+  }
+
+  // Interpolate a [lon,lat,alt] point at a given arc length along the line.
+  const pointAtArcLength = (s: number): number[] => {
+    if (s <= 0) return [...coords[0]];
+    if (s >= totalLength) return [...coords[coords.length - 1]];
+    let k = 0;
+    while (k < cum.length - 1 && cum[k + 1] < s) k++;
+    const f = (s - cum[k]) / (cum[k + 1] - cum[k] || 1);
+    return [
+      coords[k][0] + f * (coords[k + 1][0] - coords[k][0]),
+      coords[k][1] + f * (coords[k + 1][1] - coords[k][1]),
+      coords[k][2] + f * (coords[k + 1][2] - coords[k][2]),
+    ];
+  };
+
+  // Unit tangent (east, north) at a given arc length, from the segment it lies on.
+  const tangentAtArcLength = (s: number): [number, number] => {
+    let k = 0;
+    while (k < cum.length - 2 && cum[k + 1] < s) k++;
+    const lat = coords[k][1];
+    const dE = (coords[k + 1][0] - coords[k][0]) * Math.cos((lat * Math.PI) / 180) * 111320;
+    const dN = (coords[k + 1][1] - coords[k][1]) * 111320;
+    const len = Math.hypot(dE, dN) || 1;
+    return [dE / len, dN / len];
+  };
+
+  // Build corridor stations (centre + tangent) evenly spaced along the path.
+  const stations = Array.from({ length: nA }, (_, i) => {
+    const s = Math.min(totalLength, i * effInterval);
+    const p = pointAtArcLength(s);
+    const [tE, tN] = tangentAtArcLength(s);
+    return { s, lon: p[0], lat: p[1], alt: p[2], tE, tN };
+  });
+
+  // Offset a station laterally (perpendicular to travel) by `o` metres → [lon,lat].
+  const lateralPoint = (st: { lon: number; lat: number; tE: number; tN: number }, o: number): [number, number] => {
+    // Perpendicular to (tE, tN) is (-tN, tE)
+    const offE = -st.tN * o;
+    const offN = st.tE * o;
+    const dLon = offE / (Math.cos((st.lat * Math.PI) / 180) * 111320);
+    const dLat = offN / 111320;
+    return [st.lon + dLon, st.lat + dLat];
+  };
+
+  // Sample terrain over the whole corridor grid (stations × lanes), in chunks.
+  const terrainProvider = viewer.terrainProvider;
+  const gridHeights = new Array<number>(nA * nLanes).fill(0);
+  const hasTerrain = !!terrainProvider && terrainProvider.constructor.name !== 'EllipsoidTerrainProvider';
+
+  if (hasTerrain) {
+    const cartographics = [];
+    for (let i = 0; i < nA; i++) {
+      for (let l = 0; l < nLanes; l++) {
+        const [lon, lat] = lateralPoint(stations[i], laneOffsets[l]);
+        cartographics.push(Cartographic.fromDegrees(lon, lat, 0));
+      }
+    }
+    const CHUNK = 1000;
+    for (let start = 0; start < cartographics.length; start += CHUNK) {
+      const chunk = cartographics.slice(start, start + CHUNK);
+      const sampled = await sampleTerrainMostDetailed(terrainProvider, chunk);
+      for (let m = 0; m < sampled.length; m++) {
+        gridHeights[start + m] = defined(sampled[m].height) ? sampled[m].height : 0;
+      }
+      onProgress?.(Math.min(1, (start + chunk.length) / cartographics.length));
+    }
+  } else {
+    onProgress?.(1);
+  }
+
+  // Flag each drone station whose lower half-sphere (radius R) intersects terrain.
+  const risky = new Array<boolean>(nA).fill(false);
+  const win = Math.max(1, Math.ceil(R / effInterval));
+  for (let i = 0; i < nA; i++) {
+    const droneAlt = stations[i].alt;
+    let hit = false;
+    for (let a = Math.max(0, i - win); a <= Math.min(nA - 1, i + win) && !hit; a++) {
+      const dAlong = (i - a) * effInterval;
+      for (let l = 0; l < nLanes; l++) {
+        const o = laneOffsets[l];
+        const horiz = Math.hypot(dAlong, o); // 360° horizontal distance from the drone
+        if (horiz > R) continue;
+        // Clamp vertical to ≥0: a column above the drone counts at the drone's level.
+        const vert = Math.max(0, droneAlt - gridHeights[a * nLanes + l]);
+        if (Math.hypot(horiz, vert) <= R) {
+          hit = true;
+          break;
+        }
+      }
+    }
+    risky[i] = hit;
+  }
+
+  const riskyStationCount = risky.reduce((sum, r) => sum + (r ? 1 : 0), 0);
+  if (riskyStationCount === 0) {
+    return { segments: [], riskyStationCount: 0, totalStations: nA, effIntervalM: effInterval };
+  }
+
+  // Group consecutive risky stations into red sub-polylines (min 1 m each)
+  const segments: number[][][] = [];
+  const flushRun = (a: number, b: number) => {
+    let sStart = stations[a].s;
+    let sEnd = stations[b].s;
+    if (sEnd - sStart < 1) {
+      const mid = (sStart + sEnd) / 2;
+      sStart = Math.max(0, mid - 0.5);
+      sEnd = Math.min(totalLength, mid + 0.5);
+    }
+    const seg: number[][] = [pointAtArcLength(sStart)];
+    for (let k = a; k <= b; k++) {
+      if (stations[k].s > sStart && stations[k].s < sEnd) {
+        seg.push([stations[k].lon, stations[k].lat, stations[k].alt]);
+      }
+    }
+    seg.push(pointAtArcLength(sEnd));
+    segments.push(seg);
+  };
+
+  let runStart = -1;
+  for (let i = 0; i < nA; i++) {
+    if (risky[i] && runStart === -1) runStart = i;
+    if ((!risky[i] || i === nA - 1) && runStart !== -1) {
+      flushRun(runStart, risky[i] ? i : i - 1);
+      runStart = -1;
+    }
+  }
+
+  return { segments, riskyStationCount, totalStations: nA, effIntervalM: effInterval };
 };
 
 /**

@@ -32,7 +32,7 @@ import {
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore } from '../stores/mission-store';
-import { sampleTerrainForWaypoints, sampleTerrainWithSubPoints } from '../lib/terrain-sampler';
+import { sampleTerrainForWaypoints, sampleTerrainWithSubPoints, analyzeCollisionRisk } from '../lib/terrain-sampler';
 
 Ion.defaultAccessToken = '';
 
@@ -97,6 +97,11 @@ export const CesiumMap = () => {
   const setAddTakeoffPointMode = useMissionStore((state) => state.setAddTakeoffPointMode);
   const showAreaHeightGuides = useMissionStore((state) => state.showAreaHeightGuides);
   const showWaypointHeightGuides = useMissionStore((state) => state.showWaypointHeightGuides);
+  const collisionRequest = useMissionStore((state) => state.collisionRequest);
+  const setCollisionStatus = useMissionStore((state) => state.setCollisionStatus);
+  const setCollisionRiskCount = useMissionStore((state) => state.setCollisionRiskCount);
+  const setCollisionProgress = useMissionStore((state) => state.setCollisionProgress);
+  const setCollisionEffInterval = useMissionStore((state) => state.setCollisionEffInterval);
   const updateMission = useMissionStore((state) => state.updateMission);
   const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
   const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
@@ -1989,6 +1994,100 @@ export const CesiumMap = () => {
       customLayerLoadRunIdRef.current++;
     };
   }, [layers, cesiumToken, viewerInitVersion, firstLoadLayerRefreshTick]);
+
+  // Collision analysis: run on request, draw risky stretches in red, clear on request === null
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    const removeCollisionEntities = () => {
+      const toRemove = viewer.entities.values.filter(
+        (entity) => typeof entity.id === 'string' && entity.id.startsWith('collision-risk-')
+      );
+      toRemove.forEach((entity) => viewer.entities.remove(entity));
+    };
+
+    if (!collisionRequest) {
+      removeCollisionEntities();
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const mission = useMissionStore.getState().missions.find((m) => m.id === activeMissionId);
+        if (!mission || !mission.flightLines || mission.flightLines.length === 0) {
+          setCollisionRiskCount(0);
+          setCollisionStatus('error');
+          return;
+        }
+
+        removeCollisionEntities();
+        const fallbackAlt = mission.parameters.altitude;
+        const lines = mission.flightLines;
+        let riskCount = 0;
+        let segIndex = 0;
+        let maxEffInterval = 0;
+        // Skip the first N waypoints across the ordered flight lines (transit leg)
+        let remainingSkip = Math.max(0, Math.floor(collisionRequest.skipPoints));
+
+        for (let li = 0; li < lines.length; li++) {
+          const coords = (lines[li].coordinates ?? []).filter(
+            (c) => Number.isFinite(c[0]) && Number.isFinite(c[1])
+          );
+          const skipForLine = Math.min(remainingSkip, coords.length);
+          remainingSkip -= skipForLine;
+
+          if (coords.length - skipForLine < 2) {
+            setCollisionProgress((li + 1) / lines.length);
+            continue;
+          }
+
+          const result = await analyzeCollisionRisk(
+            viewer,
+            coords,
+            collisionRequest.threshold,
+            collisionRequest.interval,
+            5000,
+            fallbackAlt,
+            skipForLine,
+            (f) => setCollisionProgress((li + f) / lines.length)
+          );
+          if (cancelled) return;
+
+          riskCount += result.riskyStationCount;
+          maxEffInterval = Math.max(maxEffInterval, result.effIntervalM);
+          result.segments.forEach((seg) => {
+            const positions = seg.map((p) => Cartesian3.fromDegrees(p[0], p[1], p[2]));
+            viewer.entities.add({
+              id: `collision-risk-${activeMissionId}-${segIndex++}`,
+              name: 'Collision Risk',
+              polyline: {
+                positions,
+                width: 8,
+                material: Color.RED,
+                clampToGround: false,
+                arcType: 0,
+              },
+            });
+          });
+        }
+
+        if (cancelled) return;
+        setCollisionProgress(1);
+        setCollisionEffInterval(maxEffInterval);
+        setCollisionRiskCount(riskCount);
+        setCollisionStatus('done');
+      } catch (error) {
+        console.error('Collision analysis failed:', error);
+        if (!cancelled) setCollisionStatus('error');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [collisionRequest, activeMissionId, setCollisionStatus, setCollisionRiskCount, setCollisionProgress, setCollisionEffInterval]);
 
   // Render flight lines and waypoints
   useEffect(() => {
