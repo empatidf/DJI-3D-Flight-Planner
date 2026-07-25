@@ -12,6 +12,7 @@ import { generateFlightLines } from '../lib/flight-path-generator';
 import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints, decimateByElevationTolerance } from '../lib/terrain-sampler';
 import { exportToDJI, downloadKMZ, normalizeYaw } from '../lib/dji-wpml-exporter';
 import { calculateDistance } from '../lib/coordinate-transform';
+import { APP_VERSION } from '../version';
 import './FlightPlanner.css';
 
 export const FlightPlanner = () => {
@@ -1007,7 +1008,10 @@ export const FlightPlanner = () => {
           {isPanelCollapsed ? '❮' : '❯'}
         </button>
         <div className="flight-planner-content">
-          <h2>Flight Planning</h2>
+          <h2 className="flight-planner-title">
+        <span>Flight Planning</span>
+        <span className="app-version">{APP_VERSION}</span>
+      </h2>
           <div className="empty-state">
             <p>No mission selected.</p>
             <p>Create or select a mission from the Mission Manager to start planning.</p>
@@ -1029,7 +1033,10 @@ export const FlightPlanner = () => {
         {isPanelCollapsed ? '❮' : '❯'}
       </button>
       <div className="flight-planner-content">
-      <h2>Flight Planning</h2>
+      <h2 className="flight-planner-title">
+        <span>Flight Planning</span>
+        <span className="app-version">{APP_VERSION}</span>
+      </h2>
 
       {/* Status Messages */}
       {statusMessage && (

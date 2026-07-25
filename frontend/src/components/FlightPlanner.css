@@ -27,6 +27,21 @@
   padding: 15px;
 }
 
+/* Panel title with right-aligned app version */
+.flight-planner-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.app-version {
+  font-size: 0.6em;
+  font-weight: 500;
+  color: #6b7280;
+  letter-spacing: 0.02em;
+}
+
 .flight-planner.is-collapsed .flight-planner-content {
   opacity: 0;
   pointer-events: none;
