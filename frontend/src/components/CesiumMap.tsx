@@ -1210,11 +1210,6 @@ export const CesiumMap = () => {
       return typeof globeHeight === 'number' && Number.isFinite(globeHeight) ? globeHeight : 0;
     };
 
-    const toVerticalText = (height: number) => {
-      const text = `${height.toFixed(1)}m`;
-      return text.split('').join('\n');
-    };
-
     const getDjiRelativeHeightAt = (index: number) => {
       const coords = editCoordinates.current;
       if (!coords.length || !coords[index]) return missionAltitude;
