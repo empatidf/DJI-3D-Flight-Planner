@@ -23,6 +23,7 @@ import {
   Cartesian2,
   CallbackProperty,
   ConstantPositionProperty,
+  ConstantProperty,
   CallbackPositionProperty,
   CartographicGeocoderService,
   IonGeocoderService,
@@ -31,8 +32,10 @@ import {
   HeightReference,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { useMissionStore } from '../stores/mission-store';
+import { useMissionStore, waypointKey } from '../stores/mission-store';
 import { sampleTerrainForWaypoints, sampleTerrainWithSubPoints, analyzeCollisionRisk } from '../lib/terrain-sampler';
+import { WaypointActionDialog, WaypointQuickEdit } from './WaypointEditors';
+import type { WaypointAction } from '../lib/wpml-actions';
 
 Ion.defaultAccessToken = '';
 
@@ -41,6 +44,9 @@ export const CesiumMap = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const compassArrowRef = useRef<HTMLDivElement>(null);
   const [viewerInitVersion, setViewerInitVersion] = useState(0);
+  // Bumped when the terrain provider changes and again once its tiles have streamed
+  // in, so anything sampling terrain heights is rebuilt against the real surface.
+  const [terrainReadyVersion, setTerrainReadyVersion] = useState(0);
   const [firstLoadLayerRefreshTick, setFirstLoadLayerRefreshTick] = useState(0);
   const firstLoadLayerRefreshDoneRef = useRef(false);
   const [contextMenuState, setContextMenuState] = useState<{
@@ -63,6 +69,11 @@ export const CesiumMap = () => {
     index: number; lon: number; lat: number;
     altitude: number; terrainHeight: number; agl: number; djiRelativeHeight: number;
   } | null>(null);
+  const [waypointQuickEdit, setWaypointQuickEdit] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
+  const [waypointActionDialog, setWaypointActionDialog] = useState<{
+    pointIndex: number;
+    action: WaypointAction | null;
+  } | null>(null);
   const cropCallbackRef = useRef<{
     perform: (pointIndex: number) => void;
     undo: (snapshot: number[][]) => void;
@@ -84,6 +95,7 @@ export const CesiumMap = () => {
   const worldLabelsLayerRef = useRef<ImageryLayer | null>(null);
   const customTilesetsRef = useRef<Record<string, Cesium3DTileset>>({});
   const customLayerLoadRunIdRef = useRef<number>(0);
+  const terrainApplyRunIdRef = useRef<number>(0);
   const viewMode = useMissionStore((state) => state.viewMode);
   const cameraTarget = useMissionStore((state) => state.cameraTarget);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
@@ -103,6 +115,7 @@ export const CesiumMap = () => {
   const setCollisionProgress = useMissionStore((state) => state.setCollisionProgress);
   const setCollisionEffInterval = useMissionStore((state) => state.setCollisionEffInterval);
   const updateMission = useMissionStore((state) => state.updateMission);
+  const setSelectedWaypointIndex = useMissionStore((state) => state.setSelectedWaypointIndex);
   const setDrawAoiMode = useMissionStore((state) => state.setDrawAoiMode);
   const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
   const layers = useMissionStore((state) => state.layers);
@@ -432,6 +445,163 @@ export const CesiumMap = () => {
     setContextMenuState((prev) => ({ ...prev, visible: false }));
   };
 
+  /**
+   * Keep a floating menu inside the window: flip it left/up near an edge instead of
+   * letting it run off-screen, which happened on right-clicks near the panel.
+   */
+  /**
+   * Watch the terrain provider so height-dependent geometry can be rebuilt.
+   *
+   * On a cold load the flight lines and height guides render while the globe is
+   * still on the flat ellipsoid — `globe.getHeight()` happily returns 0 there, so
+   * every guide was measured against sea level instead of the Cesium Ion DSM that
+   * only gets applied a moment later. Nothing re-rendered afterwards, which is why
+   * toggling the terrain layer off/on "fixed" it.
+   *
+   * Provider swaps are rare, so re-rendering on them is cheap. The second bump waits
+   * for the new provider's tiles to finish streaming, because heights read before
+   * that are still missing or coarse.
+   */
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+
+    // Hold the Event objects directly. Cleanup must not touch `viewer.scene`: React
+    // StrictMode tears the first viewer down, and Cesium's getters throw once the
+    // widget is destroyed, which blanked the whole app.
+    const terrainProviderChanged = viewer.scene.terrainProviderChanged;
+    const tileLoadProgress = viewer.scene.globe.tileLoadProgressEvent;
+
+    let disposed = false;
+    let awaitingTiles = false;
+    let sawPendingTiles = false;
+
+    const handleProviderChanged = () => {
+      if (disposed) return;
+      awaitingTiles = true;
+      sawPendingTiles = false;
+      // Heights sampled against the old provider are now meaningless. Cleared here
+      // (synchronously, before the re-render) so the AOI effect re-samples instead
+      // of reusing its coordinate-keyed cache.
+      missionAoiTerrainCacheRef.current = {};
+      // Immediate pass so geometry at least stops using the previous provider.
+      setTerrainReadyVersion((version) => version + 1);
+    };
+
+    const handleTileProgress = (queuedTileCount: number) => {
+      if (disposed || !awaitingTiles) return;
+
+      if (queuedTileCount > 0) {
+        sawPendingTiles = true;
+        return;
+      }
+
+      // Queue drained after the swap — heights for the current view are now real.
+      if (!sawPendingTiles) return;
+      awaitingTiles = false;
+      sawPendingTiles = false;
+      missionAoiTerrainCacheRef.current = {};
+      setTerrainReadyVersion((version) => version + 1);
+    };
+
+    terrainProviderChanged.addEventListener(handleProviderChanged);
+    tileLoadProgress.addEventListener(handleTileProgress);
+
+    return () => {
+      disposed = true;
+      terrainProviderChanged.removeEventListener(handleProviderChanged);
+      tileLoadProgress.removeEventListener(handleTileProgress);
+    };
+  }, [viewerInitVersion]);
+
+  // Escape closes the waypoint context menu, matching the rest of the floating UI.
+  useEffect(() => {
+    if (!cropMenuState) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCropMenuState(null);
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [cropMenuState]);
+
+  const clampMenuToViewport = (x: number, y: number, width: number, height: number) => {
+    const margin = 8;
+    const left = x + width + margin > window.innerWidth ? Math.max(margin, x - width) : x;
+    const top = y + height + margin > window.innerHeight ? Math.max(margin, window.innerHeight - height - margin) : y;
+    return { left: `${left}px`, top: `${top}px` };
+  };
+
+  /**
+   * Memoised terrain lookup.
+   *
+   * `globe.getHeight()` was being called from inside CallbackProperty callbacks,
+   * i.e. once per point per frame — a 300-waypoint route in edit mode issued
+   * ~35k queries/second and made the browser stutter. Results are cached per
+   * coordinate; a lookup that fails (terrain tiles not streamed in yet) is *not*
+   * cached, so it self-heals on a later frame.
+   */
+  const createTerrainSampler = (viewer: Viewer) => {
+    const cache = new Map<string, number>();
+
+    return {
+      get(lon: number, lat: number, fallback = 0): number {
+        const key = `${lon.toFixed(6)},${lat.toFixed(6)}`;
+        const cached = cache.get(key);
+        if (cached !== undefined) return cached;
+
+        const height = viewer.scene.globe.getHeight(Cartographic.fromDegrees(lon, lat));
+        if (typeof height !== 'number' || !Number.isFinite(height)) return fallback;
+
+        // Dragging a point mints a new key per frame; keep the map bounded.
+        if (cache.size > 20000) cache.clear();
+        cache.set(key, height);
+        return height;
+      },
+    };
+  };
+
+  /**
+   * Re-assert the imagery stack order: world basemap at the bottom, world labels
+   * above it, then every custom Cesium Ion overlay on top.
+   *
+   * World layers and custom layers are loaded by two independent async effects, so
+   * whichever provider resolved last used to end up on top. That is why a custom
+   * RGB orthophoto could report "added" and still be invisible until the layer was
+   * toggled off/on (which re-ran the custom loader and put it back on top).
+   * Both loaders call this once they are done, so the order no longer depends on
+   * which network request wins.
+   */
+  const enforceImageryOrder = (viewer: Viewer) => {
+    const collection = viewer.imageryLayers;
+    const worldImagery = worldImageryLayerRef.current;
+    const worldLabels = worldLabelsLayerRef.current;
+
+    if (worldImagery && collection.contains(worldImagery)) {
+      collection.lowerToBottom(worldImagery);
+    }
+
+    if (worldLabels && collection.contains(worldLabels)) {
+      collection.lowerToBottom(worldLabels);
+      // Sit directly above the basemap rather than at the very bottom.
+      if (worldImagery && collection.contains(worldImagery)) {
+        collection.raise(worldLabels);
+      }
+    }
+
+    // Raise custom overlays bottom-up so their relative order is preserved.
+    const customLayers: ImageryLayer[] = [];
+    for (let i = 0; i < collection.length; i++) {
+      const layer = collection.get(i);
+      // @ts-expect-error - custom marker property set when the layer is added
+      if (layer._customLayerId) customLayers.push(layer);
+    }
+    customLayers.forEach((layer) => collection.raiseToTop(layer));
+
+    viewer.scene.requestRender();
+  };
+
   // Load default world layers only when a valid token is present
   useEffect(() => {
     if (!viewerRef.current) return;
@@ -479,7 +649,8 @@ export const CesiumMap = () => {
         if (cancelled || !viewerRef.current) return;
         worldLabelsLayerRef.current = viewer.imageryLayers.addImageryProvider(labelsProvider);
 
-        viewer.scene.requestRender();
+        // Custom overlays may already have been added while these were loading.
+        enforceImageryOrder(viewer);
       } catch (error) {
         console.error('Failed to load Cesium world layers:', error);
       }
@@ -592,7 +763,21 @@ export const CesiumMap = () => {
 
     const viewer = viewerRef.current;
     const terrainLayer = layers.find(l => l.id === 'terrain');
-    
+
+    // A visible Cesium Ion TERRAIN asset (e.g. a DSM) owns the terrain provider.
+    // Without this guard the two effects raced and whichever finished last won, so
+    // the DSM was silently replaced by flat/world terrain on some page loads.
+    const hasIonTerrainLayer = layers.some(
+      (layer) => layer.visible && layer.cesiumAssetType === 'TERRAIN' && Number.isFinite(Number(layer.cesiumAssetId))
+    );
+
+    if (hasIonTerrainLayer) {
+      console.log('[Terrain] Cesium Ion terrain asset is visible — leaving terrainProvider to the layer loader');
+      return;
+    }
+
+    const runId = ++terrainApplyRunIdRef.current;
+
     if (terrainLayer?.visible) {
       // Enable 3D terrain with vertex normals and water mask for better visualization
       console.log('Loading 3D terrain...');
@@ -600,10 +785,10 @@ export const CesiumMap = () => {
         requestVertexNormals: true,
         requestWaterMask: true,
       }).then((terrainProvider) => {
-        if (viewerRef.current) {
-          viewerRef.current.terrainProvider = terrainProvider;
-          console.log('3D terrain loaded - navigate to mountainous areas to see elevation');
-        }
+        if (!viewerRef.current || viewerRef.current !== viewer) return;
+        if (terrainApplyRunIdRef.current !== runId) return;
+        viewerRef.current.terrainProvider = terrainProvider;
+        console.log('3D terrain loaded - navigate to mountainous areas to see elevation');
       }).catch((error) => {
         console.error('Failed to load Cesium World Terrain:', error);
       });
@@ -692,7 +877,8 @@ export const CesiumMap = () => {
       const existingEntity = viewer.entities.getById(entityId);
       if (existingEntity?.polyline) {
         existingEntity.name = mission.aoi.name;
-        existingEntity.polyline.positions = new CallbackProperty(() => closedFallbackPositions, false);
+        // Static array — a non-constant CallbackProperty re-read it every frame.
+        existingEntity.polyline.positions = new ConstantProperty(closedFallbackPositions);
       } else {
         viewer.entities.add({
           id: entityId,
@@ -730,7 +916,7 @@ export const CesiumMap = () => {
         };
 
         const refinedPositions = [...positions, positions[0]];
-        entity.polyline.positions = new CallbackProperty(() => refinedPositions, false);
+        entity.polyline.positions = new ConstantProperty(refinedPositions);
         viewer.scene.requestRender();
       };
 
@@ -760,8 +946,9 @@ export const CesiumMap = () => {
       }
     });
     
-    // Dependencies include missions array - any change triggers immediate re-render
-  }, [missions, activeMissionIdForKmlEdit, kmlEditMode]);
+    // Dependencies include missions array - any change triggers immediate re-render.
+    // terrainReadyVersion re-samples the AOI border after a terrain provider swap.
+  }, [missions, activeMissionIdForKmlEdit, kmlEditMode, terrainReadyVersion]);
 
   // AOI point drag editing for active mission
   useEffect(() => {
@@ -835,6 +1022,8 @@ export const CesiumMap = () => {
       entities.forEach((entity) => viewer.entities.remove(entity));
     };
 
+    const terrainSampler = createTerrainSampler(viewer);
+
     const buildMidPointCartesian = (edgeIndex: number) => {
       const coords = editCoordinatesRef.current;
       if (!coords || coords.length < 2) return Cartesian3.fromDegrees(0, 0, editAltitudeRef.current);
@@ -848,10 +1037,7 @@ export const CesiumMap = () => {
       return Cartesian3.fromDegrees(midpointLon, midpointLat, midpointAlt);
     };
 
-    const getTerrainHeightAt = (coord: number[]) => {
-      const globeHeight = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
-      return typeof globeHeight === 'number' && Number.isFinite(globeHeight) ? globeHeight : 0;
-    };
+    const getTerrainHeightAt = (coord: number[]) => terrainSampler.get(coord[0], coord[1]);
 
     const toVerticalText = (height: number) => `${height.toFixed(1)}m`.split('').join('\n');
 
@@ -1143,12 +1329,20 @@ export const CesiumMap = () => {
     });
 
     const editCoordinates = { current: initialCoordinates } as { current: number[][] };
+    let editLinePositions: Cartesian3[] | null = null;
 
     const lineEntity = viewer.entities.add({
       id: `wp-edit-line-${activeMissionId}`,
       polyline: {
+        // Rebuilt only when a point actually moves; this used to allocate one
+        // Cartesian3 per waypoint on every frame.
         positions: new CallbackProperty(() => {
-          return editCoordinates.current.map((coord) => Cartesian3.fromDegrees(coord[0], coord[1]));
+          if (!editLinePositions) {
+            editLinePositions = editCoordinates.current.map((coord) =>
+              Cartesian3.fromDegrees(coord[0], coord[1])
+            );
+          }
+          return editLinePositions;
         }, false),
         width: 3,
         material: Color.YELLOW,
@@ -1164,6 +1358,8 @@ export const CesiumMap = () => {
     let selectedPointIndex: number | null = null;
     let draggingPointIndex: number | null = null;
     let skipNextAppendClick = false;
+    // Overrides are keyed by coordinate, so a dragged point needs its key moved.
+    let dragStartKey: string | null = null;
 
     const setNavigationEnabled = (enabled: boolean) => {
       const controller = viewer.scene.screenSpaceCameraController;
@@ -1197,7 +1393,54 @@ export const CesiumMap = () => {
       });
     };
 
+    /** Move a per-waypoint override to the point's new coordinate key after a drag. */
+    const remapOverrideKey = (oldKey: string, newKey: string) => {
+      if (oldKey === newKey) return;
+
+      const missionFromStore = useMissionStore
+        .getState()
+        .missions.find((mission) => mission.id === activeMissionId);
+      const line = missionFromStore?.flightLines?.[0];
+      const override = line?.waypointOverrides?.[oldKey];
+      if (!missionFromStore || !line || !override) return;
+
+      const overrides = { ...line.waypointOverrides };
+      delete overrides[oldKey];
+      overrides[newKey] = override;
+
+      updateMission(activeMissionId, {
+        flightLines: [{ ...line, waypointOverrides: overrides }, ...missionFromStore.flightLines.slice(1)],
+      });
+    };
+
+    const terrainSampler = createTerrainSampler(viewer);
+
+    /**
+     * Handle positions are read by CallbackPositionProperty on every frame. With a
+     * few hundred waypoints that meant rebuilding every Cartesian3 60x/second, so
+     * they are cached and invalidated only when a point actually moves.
+     */
+    const pointPositionCache = new Map<number, Cartesian3>();
+    const midPointPositionCache = new Map<number, Cartesian3>();
+
+    const invalidatePositionCaches = (pointIndex?: number) => {
+      editLinePositions = null;
+
+      if (pointIndex === undefined) {
+        pointPositionCache.clear();
+        midPointPositionCache.clear();
+        return;
+      }
+      pointPositionCache.delete(pointIndex);
+      // A moved point reshapes the edges on either side of it.
+      midPointPositionCache.delete(pointIndex - 1);
+      midPointPositionCache.delete(pointIndex);
+    };
+
     const buildMidPointCartesian = (edgeIndex: number) => {
+      const cached = midPointPositionCache.get(edgeIndex);
+      if (cached) return cached;
+
       const coords = editCoordinates.current;
       if (coords.length < 2 || edgeIndex < 0 || edgeIndex >= coords.length - 1) {
         return Cartesian3.fromDegrees(0, 0);
@@ -1206,13 +1449,23 @@ export const CesiumMap = () => {
       const second = coords[edgeIndex + 1];
       const midLon = (first[0] + second[0]) / 2;
       const midLat = (first[1] + second[1]) / 2;
-      const h = viewer.scene.globe.getHeight(Cartographic.fromDegrees(midLon, midLat)) ?? 0;
-      return Cartesian3.fromDegrees(midLon, midLat, h);
+      const position = Cartesian3.fromDegrees(midLon, midLat, terrainSampler.get(midLon, midLat));
+      midPointPositionCache.set(edgeIndex, position);
+      return position;
     };
 
-    const getTerrainHeightAt = (coord: number[]) => {
-      const globeHeight = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
-      return typeof globeHeight === 'number' && Number.isFinite(globeHeight) ? globeHeight : 0;
+    const getTerrainHeightAt = (coord: number[]) => terrainSampler.get(coord[0], coord[1]);
+
+    const buildPointCartesian = (index: number) => {
+      const cached = pointPositionCache.get(index);
+      if (cached) return cached;
+
+      const current = editCoordinates.current[index];
+      if (!current) return Cartesian3.fromDegrees(0, 0);
+
+      const position = Cartesian3.fromDegrees(current[0], current[1], getTerrainHeightAt(current));
+      pointPositionCache.set(index, position);
+      return position;
     };
 
     const getDjiRelativeHeightAt = (index: number) => {
@@ -1240,16 +1493,18 @@ export const CesiumMap = () => {
         deletePointEntity = null;
       }
 
+      // Publish the selection so the Flight Planning panel can show/edit this waypoint.
+      setSelectedWaypointIndex(selectedPointIndex);
+
+      // Indices shift on insert/delete/crop, so drop every cached handle position.
+      invalidatePositionCaches();
+
       const coords = editCoordinates.current;
       pointEntities = coords.map((_, index) => {
         const isSelected = selectedPointIndex === index;
         return viewer.entities.add({
           id: `wp-edit-point-${activeMissionId}-${index}`,
-          position: new CallbackPositionProperty(() => {
-            const current = editCoordinates.current[index];
-            if (!current) return Cartesian3.fromDegrees(0, 0);
-            return Cartesian3.fromDegrees(current[0], current[1], getTerrainHeightAt(current));
-          }, false),
+          position: new CallbackPositionProperty(() => buildPointCartesian(index), false),
           point: {
             pixelSize: isSelected ? 13 : 11,
             color: isSelected ? Color.RED : Color.CYAN,
@@ -1283,11 +1538,7 @@ export const CesiumMap = () => {
       if (selectedPointIndex !== null && coords.length > 2) {
         deletePointEntity = viewer.entities.add({
           id: `wp-edit-delete-${activeMissionId}`,
-          position: new CallbackPositionProperty(() => {
-            const selected = editCoordinates.current[selectedPointIndex!];
-            if (!selected) return Cartesian3.fromDegrees(0, 0);
-            return Cartesian3.fromDegrees(selected[0], selected[1], getTerrainHeightAt(selected));
-          }, false),
+          position: new CallbackPositionProperty(() => buildPointCartesian(selectedPointIndex!), false),
           label: {
             text: '🗑',
             font: 'bold 20px sans-serif',
@@ -1406,6 +1657,8 @@ export const CesiumMap = () => {
       if (pointMatch) {
         draggingPointIndex = Number(pointMatch[1]);
         selectedPointIndex = draggingPointIndex;
+        const dragged = editCoordinates.current[draggingPointIndex];
+        dragStartKey = dragged ? waypointKey(dragged[0], dragged[1]) : null;
         skipNextAppendClick = true;
         rebuildEditHandles();
         setNavigationEnabled(false);
@@ -1421,6 +1674,7 @@ export const CesiumMap = () => {
           ? currentCoords[draggingPointIndex][2]
           : missionAltitude;
         currentCoords[draggingPointIndex] = [lonLat.lon, lonLat.lat, altitude];
+        invalidatePositionCaches(draggingPointIndex);
         viewer.scene.requestRender();
         return;
       }
@@ -1500,7 +1754,12 @@ export const CesiumMap = () => {
 
     const stopDrag = () => {
       if (draggingPointIndex !== null) {
+        const moved = editCoordinates.current[draggingPointIndex];
         persistCoordinatesToStore();
+        if (dragStartKey && moved) {
+          remapOverrideKey(dragStartKey, waypointKey(moved[0], moved[1]));
+        }
+        dragStartKey = null;
         draggingPointIndex = null;
         setNavigationEnabled(true);
       }
@@ -1521,13 +1780,49 @@ export const CesiumMap = () => {
 
     document.addEventListener('keydown', handleKeyDown);
 
+    // Keep the map in sync with edits made from the Flight Planning panel:
+    // selection changes and per-waypoint altitude changes.
+    let lastSyncedLine: unknown = null;
+    const unsubscribeStore = useMissionStore.subscribe((state) => {
+      const requested = state.selectedWaypointIndex;
+      const clamped =
+        requested !== null && requested >= 0 && requested < editCoordinates.current.length ? requested : null;
+
+      if (clamped !== selectedPointIndex) {
+        selectedPointIndex = clamped;
+        rebuildEditHandles();
+        viewer.scene.requestRender();
+      }
+
+      const storeLine = state.missions.find((mission) => mission.id === activeMissionId)?.flightLines?.[0];
+      if (storeLine === lastSyncedLine) return;
+      lastSyncedLine = storeLine;
+
+      const storeCoords = storeLine?.coordinates;
+      if (storeCoords && storeCoords.length === editCoordinates.current.length && draggingPointIndex === null) {
+        let altitudeChanged = false;
+        storeCoords.forEach((coord, index) => {
+          const local = editCoordinates.current[index];
+          if (local && coord[2] !== local[2]) {
+            local[2] = coord[2];
+            altitudeChanged = true;
+          }
+        });
+        if (altitudeChanged) viewer.scene.requestRender();
+      }
+    });
+
     return () => {
       handler.destroy();
+      unsubscribeStore();
       document.removeEventListener('keydown', handleKeyDown);
       cropCallbackRef.current = null;
       setCropMenuState(null);
       setCropUndoData(null);
       setPointInfoState(null);
+      setWaypointQuickEdit(null);
+      setWaypointActionDialog(null);
+      setSelectedWaypointIndex(null);
       setNavigationEnabled(true);
       viewer.entities.remove(lineEntity);
       viewer.entities.remove(appendPreviewEntity);
@@ -1539,7 +1834,7 @@ export const CesiumMap = () => {
         viewer.entities.remove(deletePointEntity);
       }
     };
-  }, [activeMissionId, kmlEditMode, updateMission]);
+  }, [activeMissionId, kmlEditMode, updateMission, setSelectedWaypointIndex]);
 
   // AOI draw mode: click points, live preview line, right-click to finish polygon
   useEffect(() => {
@@ -1935,6 +2230,8 @@ export const CesiumMap = () => {
             if (customLayerLoadRunIdRef.current !== runId) return;
             if (!viewerRef.current || viewerRef.current !== viewer) return;
 
+            // Invalidate any in-flight world-terrain load so it cannot overwrite this.
+            terrainApplyRunIdRef.current++;
             viewer.terrainProvider = terrainProvider;
             console.log(`Applied Cesium Ion TERRAIN: ${layer.name} (Asset: ${assetId})`);
             viewer.scene.requestRender();
@@ -1982,8 +2279,9 @@ export const CesiumMap = () => {
           // @ts-ignore - adding custom property
           imageryLayer._customLayerId = `custom-${layer.id}`;
           imageryLayer.alpha = Number.isFinite(layer.opacity) ? layer.opacity : 1;
-          viewer.imageryLayers.raise(imageryLayer);
-          viewer.scene.requestRender();
+          // raise() only moves one position, which left the overlay buried under the
+          // world basemap/labels whenever those finished loading later.
+          enforceImageryOrder(viewer);
         }
       }
     };
@@ -2102,8 +2400,9 @@ export const CesiumMap = () => {
     }
 
     const viewer = viewerRef.current;
+    const terrainSampler = createTerrainSampler(viewer);
     const activeLineEntityIds = new Set<string>();
-    
+
     // Remove dynamic point/guide entities (line entities are updated in-place)
     const entitiesToRemove: Entity[] = [];
     viewer.entities.values.forEach((entity) => {
@@ -2203,7 +2502,7 @@ export const CesiumMap = () => {
           const existingLineEntity = viewer.entities.getById(lineEntityId);
           if (existingLineEntity?.polyline) {
             existingLineEntity.name = `Flight Line ${lineIndex + 1}`;
-            existingLineEntity.polyline.positions = new CallbackProperty(() => positions, false);
+            existingLineEntity.polyline.positions = new ConstantProperty(positions);
           } else {
             viewer.entities.add({
               id: lineEntityId,
@@ -2246,7 +2545,7 @@ export const CesiumMap = () => {
             const existingConnector = viewer.entities.getById(connectorEntityId);
             if (existingConnector?.polyline) {
               existingConnector.name = `Flight Connector ${drawableIndex + 1}`;
-              existingConnector.polyline.positions = new CallbackProperty(() => connectorPositions, false);
+              existingConnector.polyline.positions = new ConstantProperty(connectorPositions);
             } else {
               viewer.entities.add({
                 id: connectorEntityId,
@@ -2320,12 +2619,7 @@ export const CesiumMap = () => {
             const firstAltitude = Number.isFinite(firstCoord?.[2]) ? firstCoord[2] : missionAltitude;
             const pointAltitude = Number.isFinite(coord[2]) ? coord[2] : missionAltitude;
             const djiRelativeHeight = missionAltitude + (pointAltitude - firstAltitude);
-            const getTerrainHeightAtPoint = () => {
-              const terrainHeightRaw = viewer.scene.globe.getHeight(Cartographic.fromDegrees(coord[0], coord[1]));
-              return typeof terrainHeightRaw === 'number' && Number.isFinite(terrainHeightRaw)
-                ? terrainHeightRaw
-                : pointAltitude;
-            };
+            const getTerrainHeightAtPoint = () => terrainSampler.get(coord[0], coord[1], pointAltitude);
 
             viewer.entities.add({
               id: `waypoint-guide-line-${mission.id}-${lineIndex}-${wpIndex}`,
@@ -2380,7 +2674,15 @@ export const CesiumMap = () => {
     
     console.log(`=== RENDER COMPLETE: ${totalLinesRendered} flight lines rendered ===`);
     console.log(`Total entities in viewer: ${viewer.entities.values.length}`);
-  }, [missions, kmlEditMode, activeMissionIdForKmlEdit, showWaypointHeightGuides, showAreaHeightGuides]);
+    // terrainReadyVersion rebuilds the height guides once the real terrain is in place.
+  }, [
+    missions,
+    kmlEditMode,
+    activeMissionIdForKmlEdit,
+    showWaypointHeightGuides,
+    showAreaHeightGuides,
+    terrainReadyVersion,
+  ]);
 
   return (
     <div
@@ -2416,41 +2718,46 @@ export const CesiumMap = () => {
         </div>
       )}
       {cropMenuState && (
-        <div
-          className="map-context-menu"
-          style={{ left: `${cropMenuState.x}px`, top: `${cropMenuState.y}px` }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {cropMenuState.pointIndex > 0 && (
-            <button
-              type="button"
-              className="map-context-menu-item"
-              onClick={() => {
-                cropCallbackRef.current?.perform(cropMenuState.pointIndex);
-                setCropMenuState(null);
-              }}
-            >
-              ✂ Crop from here
-            </button>
+        <div className="wp-menu" style={clampMenuToViewport(cropMenuState.x, cropMenuState.y, 236, 260)}>
+          {cropMenuState.pointIndex >= 0 && (
+            <div className="wp-menu-head">Waypoint #{cropMenuState.pointIndex + 1}</div>
           )}
-          {cropUndoData && (
-            <button
-              type="button"
-              className="map-context-menu-item"
-              onClick={() => {
-                cropCallbackRef.current?.undo(cropUndoData);
-                setCropUndoData(null);
-                setCropMenuState(null);
-              }}
-            >
-              ↩ Undo Crop
-            </button>
-          )}
+
           {cropMenuState.pointIndex >= 0 && (
             <>
               <button
                 type="button"
-                className="map-context-menu-item"
+                className="wp-menu-item"
+                onClick={() => {
+                  setWaypointQuickEdit({
+                    x: cropMenuState.x + 12,
+                    y: cropMenuState.y,
+                    pointIndex: cropMenuState.pointIndex,
+                  });
+                  setCropMenuState(null);
+                }}
+              >
+                <span className="wp-menu-icon">✎</span>
+                <span className="wp-menu-label">Edit waypoint</span>
+                <span className="wp-menu-hint">alt · speed</span>
+              </button>
+              <button
+                type="button"
+                className="wp-menu-item"
+                onClick={() => {
+                  setWaypointActionDialog({ pointIndex: cropMenuState.pointIndex, action: null });
+                  setCropMenuState(null);
+                }}
+              >
+                <span className="wp-menu-icon">＋</span>
+                <span className="wp-menu-label">Add action</span>
+              </button>
+
+              <div className="wp-menu-sep" />
+
+              <button
+                type="button"
+                className="wp-menu-item"
                 onClick={() => {
                   const info = cropCallbackRef.current?.getPointInfo(cropMenuState.pointIndex);
                   if (info) {
@@ -2465,11 +2772,12 @@ export const CesiumMap = () => {
                   setCropMenuState(null);
                 }}
               >
-                ℹ Info
+                <span className="wp-menu-icon">ⓘ</span>
+                <span className="wp-menu-label">Info</span>
               </button>
               <button
                 type="button"
-                className="map-context-menu-item"
+                className="wp-menu-item"
                 onClick={() => {
                   const info = cropCallbackRef.current?.getPointInfo(cropMenuState.pointIndex);
                   if (info) {
@@ -2478,16 +2786,47 @@ export const CesiumMap = () => {
                   setCropMenuState(null);
                 }}
               >
-                ⎘ Copy Coordinates
+                <span className="wp-menu-icon">⧉</span>
+                <span className="wp-menu-label">Copy coordinates</span>
               </button>
             </>
           )}
-          <button
-            type="button"
-            className="map-context-menu-item"
-            onClick={() => setCropMenuState(null)}
-          >
-            Cancel
+
+          {(cropMenuState.pointIndex > 0 || cropUndoData) && <div className="wp-menu-sep" />}
+
+          {cropMenuState.pointIndex > 0 && (
+            <button
+              type="button"
+              className="wp-menu-item is-danger"
+              onClick={() => {
+                cropCallbackRef.current?.perform(cropMenuState.pointIndex);
+                setCropMenuState(null);
+              }}
+            >
+              <span className="wp-menu-icon">✂</span>
+              <span className="wp-menu-label">Crop from here</span>
+            </button>
+          )}
+          {cropUndoData && (
+            <button
+              type="button"
+              className="wp-menu-item"
+              onClick={() => {
+                cropCallbackRef.current?.undo(cropUndoData);
+                setCropUndoData(null);
+                setCropMenuState(null);
+              }}
+            >
+              <span className="wp-menu-icon">↩</span>
+              <span className="wp-menu-label">Undo crop</span>
+            </button>
+          )}
+
+          <div className="wp-menu-sep" />
+          <button type="button" className="wp-menu-item is-muted" onClick={() => setCropMenuState(null)}>
+            <span className="wp-menu-icon">✕</span>
+            <span className="wp-menu-label">Cancel</span>
+            <span className="wp-menu-hint">Esc</span>
           </button>
         </div>
       )}
@@ -2525,6 +2864,29 @@ export const CesiumMap = () => {
             <span className="point-info-value">{pointInfoState.djiRelativeHeight.toFixed(1)} m</span>
           </div>
         </div>
+      )}
+      {waypointQuickEdit && activeMissionId && (
+        <WaypointQuickEdit
+          key={`quick-${waypointQuickEdit.pointIndex}`}
+          missionId={activeMissionId}
+          pointIndex={waypointQuickEdit.pointIndex}
+          x={waypointQuickEdit.x}
+          y={waypointQuickEdit.y}
+          onClose={() => setWaypointQuickEdit(null)}
+          onAddAction={() => {
+            setWaypointActionDialog({ pointIndex: waypointQuickEdit.pointIndex, action: null });
+            setWaypointQuickEdit(null);
+          }}
+        />
+      )}
+      {waypointActionDialog && activeMissionId && (
+        <WaypointActionDialog
+          key={`action-${waypointActionDialog.pointIndex}-${waypointActionDialog.action?.id ?? 'new'}`}
+          missionId={activeMissionId}
+          pointIndex={waypointActionDialog.pointIndex}
+          action={waypointActionDialog.action}
+          onClose={() => setWaypointActionDialog(null)}
+        />
       )}
       {cropUndoData && (
         <button

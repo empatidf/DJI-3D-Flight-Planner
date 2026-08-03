@@ -84,18 +84,37 @@ export const sampleTerrainForWaypoints = async (
     
     // Sample terrain heights
     const sampledPositions = await sampleTerrainMostDetailed(terrainProvider, positions);
-    
+
     console.log('Terrain sampling complete');
+
+    // A point OUTSIDE the active terrain layer's (e.g. DSM) coverage comes back with
+    // height 0 — sampleTerrainMostDetailed leaves the input height (0) untouched. Using
+    // that 0 would drop the waypoint to ~sea level (0 + AGL), far below the base map, and
+    // if it's the first point it corrupts every DJI relative height. So treat 0/non-finite
+    // as "no data" and fall back to the base globe terrain, then to the mean of valid
+    // samples — the point stays on the ground instead of sinking.
+    const isValidTerrain = (h: number | undefined): h is number =>
+      defined(h) && Number.isFinite(h) && h !== 0;
+    const validHeights = sampledPositions.map((p) => p.height).filter(isValidTerrain);
+    const meanHeight = validHeights.length
+      ? validHeights.reduce((sum, h) => sum + h, 0) / validHeights.length
+      : 0;
 
     // Update waypoints with terrain-following altitudes
     const updatedWaypoints = sampledPositions.map((pos, index) => {
-      const terrainHeight = defined(pos.height) ? pos.height : 0;
+      let terrainHeight = isValidTerrain(pos.height) ? pos.height : NaN;
+      if (!Number.isFinite(terrainHeight)) {
+        const globeHeight = viewer.scene.globe.getHeight(
+          Cartographic.fromDegrees(waypoints[index][0], waypoints[index][1])
+        );
+        terrainHeight = isValidTerrain(globeHeight) ? globeHeight : meanHeight;
+      }
       const absoluteAltitude = terrainHeight + aglAltitude;
-      
+
       if (index < 3) {
         console.log(`Waypoint ${index}: terrain=${terrainHeight.toFixed(2)}m, AGL=${aglAltitude}m, abs=${absoluteAltitude.toFixed(2)}m`);
       }
-      
+
       return [
         waypoints[index][0], // lon
         waypoints[index][1], // lat
@@ -572,4 +591,16 @@ export const analyzeCollisionRisk = async (
 export const getCesiumViewer = (): Viewer | null => {
   // @ts-ignore - accessing global viewer
   return window.cesiumViewer || null;
+};
+
+/**
+ * Terrain elevation under a lon/lat, read from the already-loaded globe tiles.
+ * Returns null when no viewer exists or the tile is not loaded yet.
+ */
+export const getTerrainHeightAtDegrees = (lon: number, lat: number): number | null => {
+  const viewer = getCesiumViewer();
+  if (!viewer) return null;
+
+  const height = viewer.scene.globe.getHeight(Cartographic.fromDegrees(lon, lat));
+  return typeof height === 'number' && Number.isFinite(height) ? height : null;
 };

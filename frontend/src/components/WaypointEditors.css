@@ -1,0 +1,652 @@
+/* Compact waypoint editors: docked panel, action dialog, map quick-edit */
+
+/* ------------------------------------------------------------------ */
+/* Shared buttons                                                      */
+/* ------------------------------------------------------------------ */
+
+.wpa-btn {
+  border: 1px solid rgba(0, 0, 0, 0.22);
+  background: #fff;
+  color: #1c2128;
+  border-radius: 5px;
+  padding: 5px 12px;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wpa-btn:hover {
+  background: #f0f2f5;
+}
+
+.wpa-btn.is-small {
+  padding: 3px 9px;
+  font-size: 11px;
+}
+
+.wpa-btn.is-primary {
+  background: #2f7dd1;
+  border-color: #2f7dd1;
+  color: #fff;
+}
+
+.wpa-btn.is-primary:hover {
+  background: #3b8ee6;
+}
+
+.wpa-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ */
+/* Action dialog                                                       */
+/* ------------------------------------------------------------------ */
+
+.wpa-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 20, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1400;
+  padding: 16px;
+}
+
+.wpa-dialog {
+  width: min(380px, 100%);
+  max-height: min(86vh, 620px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  color: #1c2128;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 9px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.wpa-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  background: #f4f6f8;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.wpa-dialog-head button {
+  border: 0;
+  background: none;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.wpa-dialog-head button:hover {
+  color: #000;
+}
+
+.wpa-context {
+  padding: 5px 12px;
+  background: #eef4fb;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  font-size: 10.5px;
+  color: #34506e;
+}
+
+.wpa-dialog-body {
+  padding: 10px 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wpa-desc {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.wpa-desc code {
+  font-size: 10px;
+  color: #1a6fc4;
+}
+
+.wpa-note {
+  margin: 0;
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: #fff6e5;
+  border: 1px solid #f0d9a8;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: #7a5a12;
+}
+
+.wpa-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  background: #fafbfc;
+}
+
+/* Parameter grid */
+
+.wpa-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 9px;
+}
+
+.wpa-span,
+.wpa-field-wide {
+  grid-column: 1 / -1;
+}
+
+.wpa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.wpa-field-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.62);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wpa-field input,
+.wpa-field select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 5px;
+  background: #fff;
+  color: #1c2128;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.wpa-field input:focus,
+.wpa-field select:focus {
+  outline: none;
+  border-color: #2f7dd1;
+}
+
+.wpa-field select:disabled {
+  background: #f2f3f5;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.wpa-field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.75);
+  align-self: end;
+  padding-bottom: 4px;
+}
+
+.wpa-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wpa-chip {
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  background: #fff;
+  border-radius: 20px;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  cursor: pointer;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.wpa-chip.is-on {
+  background: #2f7dd1;
+  border-color: #2f7dd1;
+  color: #fff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Docked "Selected Waypoint Parameters" panel                         */
+/* ------------------------------------------------------------------ */
+
+.selwp {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  background: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.selwp-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.selwp-sub {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: rgba(0, 0, 0, 0.48);
+}
+
+.selwp-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #1a6fc4;
+  font-size: 11px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.selwp-link:hover {
+  text-decoration: underline;
+}
+
+/* Navigation row */
+
+.selwp-nav {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.selwp-nav button {
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: #fff;
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.selwp-nav button:hover:not(:disabled) {
+  background: #eef1f4;
+}
+
+.selwp-nav button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.selwp-title {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.selwp-title em {
+  font-style: normal;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+}
+
+.selwp-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e08a2e;
+  margin-left: 3px;
+  vertical-align: middle;
+}
+
+/* Coordinate row */
+
+.selwp-coord {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 7px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 5px;
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #1c2128;
+  cursor: pointer;
+}
+
+.selwp-coord:hover {
+  border-color: rgba(0, 0, 0, 0.25);
+}
+
+.selwp-copy {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+/* Read-only stats */
+
+.selwp-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 10.5px;
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.selwp-stats b {
+  color: #1c2128;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
+/* Editable grid */
+
+.selwp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+}
+
+/* Neutralise the planner's global label rules inside this panel. */
+.selwp label {
+  width: auto;
+  margin: 0;
+}
+
+.selwp-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.selwp-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.62);
+  white-space: nowrap;
+}
+
+.selwp-label em {
+  font-style: normal;
+  color: #e08a2e;
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+
+.selwp-grid input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.selwp-grid input:focus {
+  outline: none;
+  border-color: #2f7dd1;
+}
+
+.selwp-grid input::placeholder {
+  color: rgba(0, 0, 0, 0.32);
+  font-size: 11px;
+}
+
+/* Collapsible advanced block */
+
+.selwp-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px dashed rgba(0, 0, 0, 0.18);
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.65);
+  cursor: pointer;
+}
+
+.selwp-more:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.selwp-badge {
+  background: #e08a2e;
+  color: #fff;
+  border-radius: 9px;
+  padding: 0 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+/* Actions */
+
+.selwp-actions-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.selwp-actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.selwp-actions li {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 5px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 5px;
+  background: #fff;
+  font-size: 11px;
+}
+
+.selwp-action-index {
+  width: 15px;
+  flex: none;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.4);
+  font-size: 10px;
+}
+
+.selwp-action-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selwp-actions button {
+  flex: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px;
+  border-radius: 4px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.selwp-actions button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.08);
+  color: #000;
+}
+
+.selwp-actions button:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.selwp-actions button.is-danger:hover {
+  background: rgba(214, 60, 60, 0.14);
+  color: #b02a2a;
+}
+
+.selwp-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: rgba(0, 0, 0, 0.68);
+}
+
+.selwp-check input {
+  margin-top: 1px;
+  flex: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Map quick-edit window (dark, matches the map overlays)              */
+/* ------------------------------------------------------------------ */
+
+.wpq {
+  position: fixed;
+  width: 234px;
+  background: rgba(20, 24, 31, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  color: #fff;
+  z-index: 1300;
+  overflow: hidden;
+}
+
+.wpq-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wpq-head button {
+  border: 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.wpq-head button:hover {
+  color: #fff;
+}
+
+.wpq-coord {
+  padding: 5px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.6);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.wpq-body {
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+}
+
+.wpq-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.wpq-body input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.wpq-body input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 10.5px;
+}
+
+.wpq-body input:disabled {
+  opacity: 0.45;
+}
+
+.wpq-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  padding: 7px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.wpq-foot .wpa-btn {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.28);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.wpq-foot .wpa-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.wpq-foot .wpa-btn.is-primary {
+  background: #2f7dd1;
+  border-color: #2f7dd1;
+  color: #fff;
+}

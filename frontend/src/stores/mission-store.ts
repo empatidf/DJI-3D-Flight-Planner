@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { CameraSpec, DroneSpec } from '../lib/drone-specs';
+import type { WaypointAction } from '../lib/wpml-actions';
 
 export interface FlightParameters {
   altitude: number; // meters AGL
@@ -20,8 +21,15 @@ export interface FlightParameters {
   waypointRecordVideo: boolean;
   waypointHoverEnabled: boolean;
   waypointHoverTime: number; // seconds
-  waypointAutoDroneHeading: boolean;
+  waypointAutoDroneHeading: boolean; // legacy — superseded by globalHeadingMode
   waypointAutoGimbalYaw: boolean;
+  /**
+   * DJI Pilot 2 → "Aircraft Yaw". Written to globalWaypointHeadingParam.
+   * `followWayline` = Along the Route · `manually` = Manual · `smoothTransition` = Custom.
+   */
+  globalHeadingMode?: 'followWayline' | 'manually' | 'smoothTransition';
+  /** DJI Pilot 2 → "Gimbal Control". `manual` = Manual · `usePointSetting` = For Each Waypoint. */
+  gimbalPitchMode?: 'manual' | 'usePointSetting';
   waypointTurnDistance: number; // meters — damping distance for coordinate turns
   alwaysTerrainFollow: boolean; // when true, sub-sample terrain between waypoints
   terrainFollowAccuracy: number; // meters — insert sub-waypoint when elevation changes more than this
@@ -37,12 +45,38 @@ export interface AreaOfInterest {
   name: string;
 }
 
+/**
+ * Per-waypoint settings that override the mission-wide FlightParameters.
+ * Every field is optional — an undefined field means "use the global value".
+ */
+export interface WaypointOverride {
+  speed?: number; // m/s — emitted as wpml:waypointSpeed
+  droneYaw?: number; // degrees — emitted in wpml:waypointHeadingParam
+  gimbalPitch?: number; // degrees — applied to the per-point gimbalRotate action
+  gimbalYaw?: number; // degrees
+  turnDistance?: number; // meters — wpml:waypointTurnDampingDist
+  actions?: WaypointAction[]; // extra WPML actions executed at this waypoint
+  /** false = suppress the mission-wide actions here and run only `actions`. */
+  useGlobalActions?: boolean;
+  note?: string;
+}
+
 export interface FlightLine {
   id: string;
   coordinates: number[][]; // waypoints [lon, lat, alt][]
   photoPoints: number[][]; // photo capture points
   originalCoordinates?: number[][]; // pre-terrain-follow snapshot, used to revert
+  /**
+   * Per-waypoint overrides keyed by `waypointKey(lon, lat)` rather than by index,
+   * so they survive operations that insert or drop points (terrain follow,
+   * decimation, crop) as long as the point itself is kept.
+   */
+  waypointOverrides?: Record<string, WaypointOverride>;
 }
+
+/** Stable key for a waypoint override. ~1 cm resolution. */
+export const waypointKey = (lon: number, lat: number): string =>
+  `${Number(lon).toFixed(7)},${Number(lat).toFixed(7)}`;
 
 export interface Mission {
   id: string;
@@ -99,6 +133,8 @@ interface MissionStore {
   addTakeoffPointMode: boolean;
   showAreaHeightGuides: boolean;
   showWaypointHeightGuides: boolean;
+  // Waypoint selection (transient — not persisted). Index into flightLines[0].coordinates.
+  selectedWaypointIndex: number | null;
   // Collision analysis (transient — not persisted)
   collisionRequest: { threshold: number; interval: number; skipPoints: number; nonce: number } | null;
   collisionStatus: 'idle' | 'running' | 'done' | 'error';
@@ -118,7 +154,18 @@ interface MissionStore {
   setActiveMission: (id: string | null) => void;
   getActiveMission: () => Mission | null;
   toggleMissionVisibility: (id: string) => void;
-  
+
+  // Per-waypoint actions (operate on flightLines[0] of the given mission)
+  setSelectedWaypointIndex: (index: number | null) => void;
+  getWaypointOverride: (missionId: string, pointIndex: number) => WaypointOverride | null;
+  setWaypointOverride: (missionId: string, pointIndex: number, patch: Partial<WaypointOverride>) => void;
+  clearWaypointOverride: (missionId: string, pointIndex: number) => void;
+  setWaypointAltitude: (missionId: string, pointIndex: number, altitude: number) => void;
+  addWaypointAction: (missionId: string, pointIndex: number, action: WaypointAction) => void;
+  updateWaypointAction: (missionId: string, pointIndex: number, action: WaypointAction) => void;
+  deleteWaypointAction: (missionId: string, pointIndex: number, actionId: string) => void;
+  moveWaypointAction: (missionId: string, pointIndex: number, actionId: string, direction: -1 | 1) => void;
+
   // Layer actions
   addLayer: (layer: Omit<Layer, 'id'>) => void;
   setLayers: (layers: Layer[]) => void;
@@ -199,6 +246,7 @@ export const useMissionStore = create<MissionStore>()(
       addTakeoffPointMode: false,
       showAreaHeightGuides: false,
       showWaypointHeightGuides: false,
+      selectedWaypointIndex: null,
       collisionRequest: null,
       collisionStatus: 'idle',
       collisionRiskCount: 0,
@@ -258,6 +306,130 @@ export const useMissionStore = create<MissionStore>()(
             m.id === id ? { ...m, visible: !m.visible } : m
           ),
         }));
+      },
+
+      // Per-waypoint overrides -------------------------------------------------
+      setSelectedWaypointIndex: (index) => {
+        set((state) => (state.selectedWaypointIndex === index ? state : { selectedWaypointIndex: index }));
+      },
+
+      getWaypointOverride: (missionId, pointIndex) => {
+        const line = get().missions.find((m) => m.id === missionId)?.flightLines?.[0];
+        const coord = line?.coordinates?.[pointIndex];
+        if (!line || !coord) return null;
+        return line.waypointOverrides?.[waypointKey(coord[0], coord[1])] ?? null;
+      },
+
+      setWaypointOverride: (missionId, pointIndex, patch) => {
+        set((state) => ({
+          missions: state.missions.map((mission) => {
+            if (mission.id !== missionId) return mission;
+
+            const line = mission.flightLines?.[0];
+            const coord = line?.coordinates?.[pointIndex];
+            if (!line || !coord) return mission;
+
+            const key = waypointKey(coord[0], coord[1]);
+            const merged: WaypointOverride = { ...(line.waypointOverrides?.[key] ?? {}), ...patch };
+
+            // Drop keys explicitly reset to undefined so "use global" really means global.
+            (Object.keys(patch) as (keyof WaypointOverride)[]).forEach((field) => {
+              if (patch[field] === undefined) delete merged[field];
+            });
+
+            const overrides = { ...(line.waypointOverrides ?? {}) };
+            if (Object.keys(merged).length === 0) {
+              delete overrides[key];
+            } else {
+              overrides[key] = merged;
+            }
+
+            return {
+              ...mission,
+              flightLines: [{ ...line, waypointOverrides: overrides }, ...mission.flightLines.slice(1)],
+              updatedAt: new Date(),
+            };
+          }),
+        }));
+      },
+
+      clearWaypointOverride: (missionId, pointIndex) => {
+        set((state) => ({
+          missions: state.missions.map((mission) => {
+            if (mission.id !== missionId) return mission;
+
+            const line = mission.flightLines?.[0];
+            const coord = line?.coordinates?.[pointIndex];
+            if (!line || !coord || !line.waypointOverrides) return mission;
+
+            const overrides = { ...line.waypointOverrides };
+            delete overrides[waypointKey(coord[0], coord[1])];
+
+            return {
+              ...mission,
+              flightLines: [{ ...line, waypointOverrides: overrides }, ...mission.flightLines.slice(1)],
+              updatedAt: new Date(),
+            };
+          }),
+        }));
+      },
+
+      setWaypointAltitude: (missionId, pointIndex, altitude) => {
+        if (!Number.isFinite(altitude)) return;
+
+        set((state) => ({
+          missions: state.missions.map((mission) => {
+            if (mission.id !== missionId) return mission;
+
+            const line = mission.flightLines?.[0];
+            if (!line?.coordinates?.[pointIndex]) return mission;
+
+            const coordinates = line.coordinates.map((coord, index) =>
+              index === pointIndex ? [coord[0], coord[1], altitude] : coord
+            );
+
+            return {
+              ...mission,
+              flightLines: [{ ...line, coordinates }, ...mission.flightLines.slice(1)],
+              updatedAt: new Date(),
+            };
+          }),
+        }));
+      },
+
+      addWaypointAction: (missionId, pointIndex, action) => {
+        const existing = get().getWaypointOverride(missionId, pointIndex);
+        get().setWaypointOverride(missionId, pointIndex, {
+          actions: [...(existing?.actions ?? []), action],
+        });
+      },
+
+      updateWaypointAction: (missionId, pointIndex, action) => {
+        const existing = get().getWaypointOverride(missionId, pointIndex);
+        if (!existing?.actions) return;
+        get().setWaypointOverride(missionId, pointIndex, {
+          actions: existing.actions.map((item) => (item.id === action.id ? action : item)),
+        });
+      },
+
+      deleteWaypointAction: (missionId, pointIndex, actionId) => {
+        const existing = get().getWaypointOverride(missionId, pointIndex);
+        if (!existing?.actions) return;
+        const actions = existing.actions.filter((item) => item.id !== actionId);
+        get().setWaypointOverride(missionId, pointIndex, { actions: actions.length ? actions : undefined });
+      },
+
+      moveWaypointAction: (missionId, pointIndex, actionId, direction) => {
+        const existing = get().getWaypointOverride(missionId, pointIndex);
+        if (!existing?.actions) return;
+
+        const actions = [...existing.actions];
+        const from = actions.findIndex((item) => item.id === actionId);
+        const to = from + direction;
+        if (from < 0 || to < 0 || to >= actions.length) return;
+
+        [actions[from], actions[to]] = [actions[to], actions[from]];
+        get().setWaypointOverride(missionId, pointIndex, { actions });
       },
 
       // Layer actions
@@ -413,6 +585,7 @@ export const useMissionStore = create<MissionStore>()(
           kmlEditMode: false,
           drawAoiMode: false,
           drawWaypointMode: false,
+          selectedWaypointIndex: null,
           cameraTarget: null,
         };
       },

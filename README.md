@@ -13,10 +13,11 @@ A web-based drone mission planning tool built with **CesiumJS** and **React**. P
 - **Layer Manager** — Add Cesium Ion terrain, imagery, and 3D Tiles assets with visibility and opacity controls
 - **Area Missions** — Import area KML/KMZ or draw polygons interactively; edit vertices on the map
 - **Waypoint Missions** — Import waypoint KML/KMZ or draw routes interactively; edit points on the map
+- **Per-Waypoint Settings & Actions** — Give any single waypoint its own relative height, speed, drone yaw, gimbal attitude, and turn distance, and attach DJI WPML actions (take photo, timed / distance interval shot, hover, zoom, focus, gimbal rotate, rotate yaw, panorama, point-cloud recording, …). Heights are edited as **relative height above the take-off point**, the way waypoint missions are flown; terrain, AGL, and MSL are shown alongside. The action picker only offers what the selected drone and camera actually support, and pre-fills payload, lens, focal length, and gimbal limits from that choice. Edit from the map (right-click a point in Edit mode) or from **Selected Waypoint Parameters** in the Flight Planning panel.
 - **Photogrammetry Engine** — Real-time GSD, footprint, line spacing, photo interval, blur analysis, and speed calculations
 - **Terrain-Aware Planning** — AGL-based waypoint altitude adjustment using terrain sampling
 - **DJI Export** — Export missions as DJI Pilot 2 compatible KMZ/WPML packages. Drone and gimbal yaw values are automatically normalized to DJI's accepted range of **-180° to +180°** (0 = center), so headings like 270° are exported as -90° instead of being rejected on upload.
-- **Drone & Camera Database** — Preloaded specs for DJI Mavic 3E, Matrice 300 RTK (P1, L2, PhaseOne P3), Matrice 4E, and Sony ILX-LR1
+- **Drone & Camera Database** — Preloaded specs for DJI Mavic 3E, Mavic 3T (wide / tele / thermal), Matrice 300 RTK (P1, L2, PhaseOne P3), Matrice 4E, and Sony ILX-LR1
 - **Persistent State** — Missions, layers, Cesium token, camera position, and settings survive page reloads
 - **Right-Click Context Menu** — Copy clicked coordinates from anywhere on the map
 
@@ -27,6 +28,7 @@ A web-based drone mission planning tool built with **CesiumJS** and **React**. P
 | Drone | Cameras |
 |---|---|
 | DJI Mavic 3 Enterprise | Wide (20 MP), Zoom (12 MP) |
+| DJI Mavic 3T | Wide (48 MP, 24 mm eq.), Tele (12 MP, 162 mm eq.), Thermal (640×512, 40 mm eq., 12 µm) |
 | DJI Matrice 300 RTK | Zenmuse P1 35 mm, P1 50 mm, L2 LiDAR, PhaseOne P3 GS120 80 mm (120 MP) |
 | DJI Matrice 4E | Wide, Zoom |
 | Custom Platform | Sony ILX-LR1 50 mm, 100 mm |

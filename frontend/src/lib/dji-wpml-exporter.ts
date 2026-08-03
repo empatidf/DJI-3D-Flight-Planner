@@ -5,14 +5,34 @@
  */
 
 import JSZip from 'jszip';
-import type { Mission } from '../stores/mission-store';
+import type { FlightParameters, Mission, WaypointOverride } from '../stores/mission-store';
+import { waypointKey } from '../stores/mission-store';
+import {
+  buildActionXml,
+  getActionDef,
+  getTriggerParam,
+  getTriggerSpan,
+  isIntervalAction,
+} from './wpml-actions';
 
-const WPML_NAMESPACE = 'http://www.dji.com/wpmz/1.0.0';
+// DJI Pilot 2 (M3E/M3T firmware 2024+) writes 1.0.6; matching it keeps the
+// route editable with the same UI options the app configured.
+const WPML_NAMESPACE = 'http://www.dji.com/wpmz/1.0.6';
+
+/** Placeholder POI written by DJI Pilot 2 whenever heading mode is not "towardPOI". */
+const EMPTY_POI = '0.000000,0.000000,0.000000';
 
 interface WaypointData {
   lon: number;
   lat: number;
   alt: number;
+  /** Per-waypoint settings that win over the mission-wide FlightParameters. */
+  override?: WaypointOverride;
+}
+
+/** Mutable counter so every action group in the KMZ gets a unique id. */
+interface GroupIdCounter {
+  next: number;
 }
 
 const parseWpmlFloat = (value: unknown, fallback: number): number => {
@@ -70,7 +90,7 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
         return;
       }
 
-      allWaypoints.push({ lon, lat, alt });
+      allWaypoints.push({ lon, lat, alt, override: line.waypointOverrides?.[waypointKey(lon, lat)] });
     });
   });
 
@@ -139,6 +159,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
+    <wpml:waylineAvoidLimitAreaMode>0</wpml:waylineAvoidLimitAreaMode>
     <wpml:payloadInfo>
       <wpml:payloadEnumValue>${payloadInfo.payloadEnumValue}</wpml:payloadEnumValue>${payloadSubEnumTag}
       <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
@@ -151,9 +172,10 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
     <wpml:autoFlightSpeed>${speedValue}</wpml:autoFlightSpeed>
 `;
 
-  // Add waypoints
+  // Add waypoints. Action group ids must be unique across the whole file.
+  const groupIds: GroupIdCounter = { next: 0 };
   waypoints.forEach((wp, index) => {
-    xml += generateWaypointXML(wp, index, parameters, waypoints.length);
+    xml += generateWaypointXML(wp, index, parameters, waypoints.length, groupIds);
   });
 
   xml += `  </Folder>
@@ -186,13 +208,18 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
       ? `\n      <wpml:payloadSubEnumValue>${payloadInfo.payloadSubEnumValue}</wpml:payloadSubEnumValue>`
       : '';
 
-  const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
-  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : normalizeYaw(parameters.droneYaw);
+  // "Aircraft Yaw" in DJI Pilot 2. A per-waypoint yaw cannot be honoured while the
+  // route follows the wayline, so any override forces the route to Manual.
+  const hasManualYawOverride = waypoints.some((waypoint) => waypoint.override?.droneYaw !== undefined);
+  const configuredHeadingMode = resolveGlobalHeadingMode(parameters);
+  const headingMode =
+    hasManualYawOverride && configuredHeadingMode === 'followWayline' ? 'manually' : configuredHeadingMode;
+  const headingAngle = headingMode === 'smoothTransition' ? normalizeYaw(parameters.droneYaw) : 0;
+  const gimbalPitchMode = resolveGimbalPitchMode(parameters);
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NAMESPACE}">
 <Document>
-  <wpml:author>3D Flight Planner</wpml:author>
   <wpml:createTime>${timestamp}</wpml:createTime>
   <wpml:updateTime>${timestamp}</wpml:updateTime>
   <wpml:missionConfig>
@@ -205,6 +232,7 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
     </wpml:droneInfo>
+    <wpml:waylineAvoidLimitAreaMode>0</wpml:waylineAvoidLimitAreaMode>
     <wpml:payloadInfo>
       <wpml:payloadEnumValue>${payloadInfo.payloadEnumValue}</wpml:payloadEnumValue>${payloadSubEnumTag}
       <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
@@ -217,28 +245,35 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
     <wpml:waylineCoordinateSysParam>
       <wpml:coordinateMode>WGS84</wpml:coordinateMode>
       <wpml:heightMode>relativeToStartPoint</wpml:heightMode>
+      <wpml:positioningType>GPS</wpml:positioningType>
     </wpml:waylineCoordinateSysParam>
     <wpml:autoFlightSpeed>${speedValue}</wpml:autoFlightSpeed>
     <wpml:globalHeight>${altitudeValue}</wpml:globalHeight>
     <wpml:caliFlightEnable>0</wpml:caliFlightEnable>
-    <wpml:gimbalPitchMode>usePointSetting</wpml:gimbalPitchMode>
+    <wpml:gimbalPitchMode>${gimbalPitchMode}</wpml:gimbalPitchMode>
     <wpml:globalWaypointHeadingParam>
       <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
       <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
+      <wpml:waypointPoiPoint>${EMPTY_POI}</wpml:waypointPoiPoint>
       <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
+      <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
     </wpml:globalWaypointHeadingParam>
     <wpml:globalWaypointTurnMode>coordinateTurn</wpml:globalWaypointTurnMode>
     <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
-    <wpml:payloadParam>
+`;
+
+  // Add waypoints with their action groups
+  const groupIds: GroupIdCounter = { next: 0 };
+  waypoints.forEach((wp, index) => {
+    xml += generateTemplateWaypointXML(wp, index, parameters, waypoints.length, groupIds);
+  });
+
+  // Pilot 2 writes payloadParam after the placemarks.
+  xml += `    <wpml:payloadParam>
       <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
       <wpml:imageFormat>wide</wpml:imageFormat>
     </wpml:payloadParam>
 `;
-
-  // Add waypoints with photo action at each point
-  waypoints.forEach((wp, index) => {
-    xml += generateTemplateWaypointXML(wp, index, parameters);
-  });
 
   xml += `  </Folder>
 </Document>
@@ -248,35 +283,87 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
 };
 
 /**
- * Generate XML for a single waypoint (waylines.wpml)
+ * Route-level "Aircraft Yaw" setting shown by DJI Pilot 2.
+ * Falls back to the legacy boolean for missions saved before the mode existed.
  */
-const generateWaypointXML = (
+export const resolveGlobalHeadingMode = (
+  parameters: FlightParameters
+): 'followWayline' | 'manually' | 'smoothTransition' =>
+  parameters.globalHeadingMode ?? (parameters.waypointAutoDroneHeading ? 'followWayline' : 'manually');
+
+/** Route-level "Gimbal Control" setting shown by DJI Pilot 2. */
+export const resolveGimbalPitchMode = (parameters: FlightParameters): 'manual' | 'usePointSetting' =>
+  parameters.gimbalPitchMode ?? 'manual';
+
+/**
+ * Resolve the aircraft heading for one waypoint.
+ *
+ * A per-waypoint droneYaw always wins. Otherwise only "Along the Route" is
+ * carried down verbatim — for Manual/Custom routes DJI still expects each point
+ * to declare `smoothTransition` plus its target angle, which is exactly what
+ * Pilot 2 itself writes.
+ */
+const resolveWaypointHeading = (
+  parameters: FlightParameters,
+  override?: WaypointOverride
+): { headingMode: string; headingAngle: number } => {
+  if (override?.droneYaw !== undefined) {
+    return { headingMode: 'smoothTransition', headingAngle: normalizeYaw(override.droneYaw) };
+  }
+
+  return resolveGlobalHeadingMode(parameters) === 'followWayline'
+    ? { headingMode: 'followWayline', headingAngle: 0 }
+    : { headingMode: 'smoothTransition', headingAngle: normalizeYaw(parameters.droneYaw) };
+};
+
+/** Effective gimbal attitude at one waypoint, per-point value winning over the mission value. */
+const resolveWaypointGimbal = (
+  parameters: FlightParameters,
+  override?: WaypointOverride
+): { pitch: number; yaw: number; yawEnabled: boolean } => {
+  const pitch = override?.gimbalPitch ?? parameters.gimbalPitch;
+  const explicitYaw = override?.gimbalYaw;
+  const yawEnabled = explicitYaw !== undefined || !(parameters.waypointAutoGimbalYaw ?? false);
+
+  return {
+    pitch: parseWpmlFloat(pitch, -90),
+    yaw: yawEnabled ? normalizeYaw(explicitYaw ?? parameters.gimbalYaw) : 0,
+    yawEnabled,
+  };
+};
+
+/**
+ * Mission-wide actions (gimbal / hover / record / photo) for one waypoint,
+ * with any per-waypoint gimbal override applied.
+ */
+const buildGlobalActionXml = (
   waypoint: WaypointData,
   index: number,
-  parameters: any,
-  totalWaypoints: number
-): string => {
-  const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
-  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : normalizeYaw(parameters.droneYaw);
-  const useAutoGimbalYaw = parameters.waypointAutoGimbalYaw ?? true;
-  const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
-  const dampingDist = formatWpmlFloat(parameters.waypointTurnDistance ?? 0.5, 0.5, 2);
+  parameters: FlightParameters,
+  totalWaypoints: number,
+  startActionId: number
+): { xml: string[]; nextActionId: number } => {
+  const override = waypoint.override;
+  const gimbalPitch = override?.gimbalPitch ?? parameters.gimbalPitch;
+  const explicitGimbalYaw = override?.gimbalYaw;
+  const useAutoGimbalYaw = explicitGimbalYaw === undefined && (parameters.waypointAutoGimbalYaw ?? false);
+  const gimbalYaw = explicitGimbalYaw ?? parameters.gimbalYaw;
 
-  const actions: string[] = [];
-  let actionId = 0;
+  const xml: string[] = [];
+  let actionId = startActionId;
 
-  actions.push(`        <wpml:action>
+  xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
             <wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase>
             <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
             <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
-            <wpml:gimbalPitchRotateAngle>${parameters.gimbalPitch}</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalPitchRotateAngle>${gimbalPitch}</wpml:gimbalPitchRotateAngle>
             <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
             <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
             <wpml:gimbalYawRotateEnable>${useAutoGimbalYaw ? 0 : 1}</wpml:gimbalYawRotateEnable>
-            <wpml:gimbalYawRotateAngle>${useAutoGimbalYaw ? 0 : normalizeYaw(parameters.gimbalYaw)}</wpml:gimbalYawRotateAngle>
+            <wpml:gimbalYawRotateAngle>${useAutoGimbalYaw ? 0 : normalizeYaw(gimbalYaw)}</wpml:gimbalYawRotateAngle>
             <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
             <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
             <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
@@ -284,7 +371,7 @@ const generateWaypointXML = (
         </wpml:action>`);
 
   if (parameters.waypointHoverEnabled) {
-    actions.push(`        <wpml:action>
+    xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>hover</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
@@ -294,7 +381,7 @@ const generateWaypointXML = (
   }
 
   if (parameters.waypointRecordVideo && index === 0) {
-    actions.push(`        <wpml:action>
+    xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>startRecord</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
@@ -305,7 +392,7 @@ const generateWaypointXML = (
   }
 
   if (parameters.waypointTakePhoto !== false) {
-    actions.push(`        <wpml:action>
+    xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
@@ -316,7 +403,7 @@ const generateWaypointXML = (
   }
 
   if (parameters.waypointRecordVideo && index === totalWaypoints - 1) {
-    actions.push(`        <wpml:action>
+    xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>stopRecord</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
@@ -324,6 +411,135 @@ const generateWaypointXML = (
           </wpml:actionActuatorFuncParam>
         </wpml:action>`);
   }
+
+  return { xml, nextActionId: actionId };
+};
+
+/**
+ * Build every `<wpml:actionGroup>` block for one waypoint.
+ *
+ * Actions whose trigger is "betweenAdjacentPoints" (gimbalEvenlyRotate) must live
+ * in their own group spanning this waypoint and the next one, so they are split
+ * out of the regular "reachPoint" group.
+ */
+const buildActionGroupsXml = (
+  waypoint: WaypointData,
+  index: number,
+  parameters: FlightParameters,
+  totalWaypoints: number,
+  groupIds: GroupIdCounter
+): string => {
+  const override = waypoint.override;
+  const useGlobalActions = override?.useGlobalActions !== false;
+  const customActions = override?.actions ?? [];
+
+  const reachPointXml: string[] = [];
+  let actionId = 0;
+
+  if (useGlobalActions) {
+    const global = buildGlobalActionXml(waypoint, index, parameters, totalWaypoints, actionId);
+    reachPointXml.push(...global.xml);
+    actionId = global.nextActionId;
+  }
+
+  const segmentActions = customActions.filter(
+    (action) => getActionDef(action.func)?.trigger === 'betweenAdjacentPoints'
+  );
+  const intervalActions = customActions.filter(isIntervalAction);
+
+  customActions
+    .filter(
+      (action) => getActionDef(action.func)?.trigger !== 'betweenAdjacentPoints' && !isIntervalAction(action)
+    )
+    .forEach((action) => {
+      reachPointXml.push(buildActionXml(action, actionId++));
+    });
+
+  const groups: string[] = [];
+
+  if (reachPointXml.length > 0) {
+    groups.push(`      <wpml:actionGroup>
+        <wpml:actionGroupId>${groupIds.next++}</wpml:actionGroupId>
+        <wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex>
+        <wpml:actionGroupEndIndex>${index}</wpml:actionGroupEndIndex>
+        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+        <wpml:actionTrigger>
+          <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
+        </wpml:actionTrigger>
+${reachPointXml.join('\n')}
+      </wpml:actionGroup>`);
+  }
+
+  // A segment action needs a following waypoint to span; drop it on the last point.
+  if (segmentActions.length > 0 && index < totalWaypoints - 1) {
+    const segmentXml = segmentActions.map((action, segmentIndex) => buildActionXml(action, segmentIndex));
+
+    groups.push(`      <wpml:actionGroup>
+        <wpml:actionGroupId>${groupIds.next++}</wpml:actionGroupId>
+        <wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex>
+        <wpml:actionGroupEndIndex>${index + 1}</wpml:actionGroupEndIndex>
+        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+        <wpml:actionTrigger>
+          <wpml:actionTriggerType>betweenAdjacentPoints</wpml:actionTriggerType>
+        </wpml:actionTrigger>
+${segmentXml.join('\n')}
+      </wpml:actionGroup>`);
+  }
+
+  // Interval capture: one group per action, carrying its own trigger + interval.
+  intervalActions.forEach((action) => {
+    const def = getActionDef(action.func);
+    if (!def || index >= totalWaypoints - 1) return;
+
+    const endIndex = getTriggerSpan(action) === 'toEnd' ? totalWaypoints - 1 : index + 1;
+    const triggerParam = getTriggerParam(action);
+    const triggerParamTag =
+      triggerParam === null
+        ? ''
+        : `\n          <wpml:actionTriggerParam>${formatWpmlFloat(triggerParam, 2, 2)}</wpml:actionTriggerParam>`;
+
+    groups.push(`      <wpml:actionGroup>
+        <wpml:actionGroupId>${groupIds.next++}</wpml:actionGroupId>
+        <wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex>
+        <wpml:actionGroupEndIndex>${endIndex}</wpml:actionGroupEndIndex>
+        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+        <wpml:actionTrigger>
+          <wpml:actionTriggerType>${def.trigger}</wpml:actionTriggerType>${triggerParamTag}
+        </wpml:actionTrigger>
+${buildActionXml(action, 0)}
+      </wpml:actionGroup>`);
+  });
+
+  return groups.length ? `\n${groups.join('\n')}` : '';
+};
+
+/**
+ * Generate XML for a single waypoint (waylines.wpml)
+ */
+const generateWaypointXML = (
+  waypoint: WaypointData,
+  index: number,
+  parameters: FlightParameters,
+  totalWaypoints: number,
+  groupIds: GroupIdCounter
+): string => {
+  const override = waypoint.override;
+  const { headingMode, headingAngle } = resolveWaypointHeading(parameters, override);
+  const gimbal = resolveWaypointGimbal(parameters, override);
+  const speedValue = formatWpmlFloat(override?.speed ?? parameters.speed, 8, 2);
+
+  /*
+   * The aircraft has no leg to cut the corner against at the very start and end of
+   * the route, so DJI rejects a coordinated turn there:
+   *   "Unable to set coordinated turn for start or end waypoint" (error 1546)
+   * DJI Pilot 2 converts those two points to a straight-in stop when it generates
+   * waylines.wpml, even though template.kml keeps coordinateTurn everywhere.
+   */
+  const isRouteEndpoint = index === 0 || index === totalWaypoints - 1;
+  const turnMode = isRouteEndpoint ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
+  const dampingDist = isRouteEndpoint
+    ? '0'
+    : formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.5, 0.5, 2);
 
   return `    <Placemark>
       <Point>
@@ -335,24 +551,28 @@ const generateWaypointXML = (
       <wpml:waypointHeadingParam>
         <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
         <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
+        <wpml:waypointPoiPoint>${EMPTY_POI}</wpml:waypointPoiPoint>
+        <wpml:waypointHeadingAngleEnable>${headingMode === 'followWayline' ? 0 : 1}</wpml:waypointHeadingAngleEnable>
         <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
+        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
       </wpml:waypointHeadingParam>
       <wpml:waypointTurnParam>
-        <wpml:waypointTurnMode>coordinateTurn</wpml:waypointTurnMode>
+        <wpml:waypointTurnMode>${turnMode}</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>${dampingDist}</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
-        <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
       <wpml:useStraightLine>1</wpml:useStraightLine>
-      <wpml:actionGroup>
-        <wpml:actionGroupId>${index}</wpml:actionGroupId>
-        <wpml:actionGroupStartIndex>${index}</wpml:actionGroupStartIndex>
-        <wpml:actionGroupEndIndex>${index}</wpml:actionGroupEndIndex>
-        <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
-        <wpml:actionTrigger>
-          <wpml:actionTriggerType>reachPoint</wpml:actionTriggerType>
-        </wpml:actionTrigger>
-${actions.join('\n')}
-      </wpml:actionGroup>
+      <wpml:waypointGimbalHeadingParam>
+        <wpml:waypointGimbalPitchAngle>${formatWpmlFloat(gimbal.pitch, -90, 2)}</wpml:waypointGimbalPitchAngle>
+        <wpml:waypointGimbalYawAngle>${formatWpmlFloat(gimbal.yaw, 0, 2)}</wpml:waypointGimbalYawAngle>
+      </wpml:waypointGimbalHeadingParam>
+      <wpml:isRisky>0</wpml:isRisky>
+      <wpml:waypointWorkType>0</wpml:waypointWorkType>${buildActionGroupsXml(
+        waypoint,
+        index,
+        parameters,
+        totalWaypoints,
+        groupIds
+      )}
     </Placemark>
 `;
 };
@@ -363,12 +583,25 @@ ${actions.join('\n')}
 const generateTemplateWaypointXML = (
   waypoint: WaypointData,
   index: number,
-  parameters: any
+  parameters: FlightParameters,
+  totalWaypoints: number,
+  groupIds: GroupIdCounter
 ): string => {
-  const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
-  const headingMode = parameters.waypointAutoDroneHeading ? 'followWayline' : 'smoothTransition';
-  const headingAngle = parameters.waypointAutoDroneHeading ? 0 : normalizeYaw(parameters.droneYaw);
-  const dampingDist = formatWpmlFloat(parameters.waypointTurnDistance ?? 0.5, 0.5, 2);
+  const override = waypoint.override;
+  const { headingMode, headingAngle } = resolveWaypointHeading(parameters, override);
+  const gimbal = resolveWaypointGimbal(parameters, override);
+  const speedValue = formatWpmlFloat(override?.speed ?? parameters.speed, 8, 2);
+  const dampingDist = formatWpmlFloat(
+    override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.5,
+    0.5,
+    2
+  );
+
+  // DJI requires a per-point pitch only when the route uses "For Each Waypoint".
+  const gimbalPitchAngleTag =
+    resolveGimbalPitchMode(parameters) === 'usePointSetting'
+      ? `\n      <wpml:gimbalPitchAngle>${formatWpmlFloat(gimbal.pitch, -90, 2)}</wpml:gimbalPitchAngle>`
+      : '';
 
   return `    <Placemark>
       <Point>
@@ -381,14 +614,22 @@ const generateTemplateWaypointXML = (
       <wpml:waypointHeadingParam>
         <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
         <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
+        <wpml:waypointPoiPoint>${EMPTY_POI}</wpml:waypointPoiPoint>
         <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
+        <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
       </wpml:waypointHeadingParam>
       <wpml:waypointTurnParam>
         <wpml:waypointTurnMode>coordinateTurn</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>${dampingDist}</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
-      <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
-      <wpml:useStraightLine>1</wpml:useStraightLine>
+      <wpml:useStraightLine>1</wpml:useStraightLine>${gimbalPitchAngleTag}
+      <wpml:isRisky>0</wpml:isRisky>${buildActionGroupsXml(
+        waypoint,
+        index,
+        parameters,
+        totalWaypoints,
+        groupIds
+      )}
     </Placemark>
 `;
 };

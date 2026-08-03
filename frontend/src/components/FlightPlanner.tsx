@@ -12,6 +12,7 @@ import { generateFlightLines } from '../lib/flight-path-generator';
 import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints, decimateByElevationTolerance } from '../lib/terrain-sampler';
 import { exportToDJI, downloadKMZ, normalizeYaw } from '../lib/dji-wpml-exporter';
 import { calculateDistance } from '../lib/coordinate-transform';
+import { SelectedWaypointPanel } from './WaypointEditors';
 import { APP_VERSION } from '../version';
 import './FlightPlanner.css';
 
@@ -56,7 +57,11 @@ export const FlightPlanner = () => {
   const [waypointHoverEnabled, setWaypointHoverEnabled] = useState<boolean>(false);
   const [waypointHoverTime, setWaypointHoverTime] = useState<number>(2);
   const [waypointAutoDroneHeading, setWaypointAutoDroneHeading] = useState<boolean>(true);
-  const [waypointAutoGimbalYaw, setWaypointAutoGimbalYaw] = useState<boolean>(true);
+  // DJI Pilot 2 route defaults: "Aircraft Yaw" and "Gimbal Control".
+  const [globalHeadingMode, setGlobalHeadingMode] =
+    useState<'followWayline' | 'manually' | 'smoothTransition'>('manually');
+  const [gimbalPitchMode, setGimbalPitchMode] = useState<'manual' | 'usePointSetting'>('manual');
+  const [waypointAutoGimbalYaw, setWaypointAutoGimbalYaw] = useState<boolean>(false);
   const [waypointTurnDistance, setWaypointTurnDistance] = useState<number>(0.5);
   const [alwaysTerrainFollow, setAlwaysTerrainFollow] = useState<boolean>(false);
   const [terrainFollowAccuracy, setTerrainFollowAccuracy] = useState<number>(2);
@@ -253,7 +258,12 @@ export const FlightPlanner = () => {
       setWaypointHoverEnabled(activeMission.parameters.waypointHoverEnabled ?? false);
       setWaypointHoverTime(activeMission.parameters.waypointHoverTime ?? 2);
       setWaypointAutoDroneHeading(activeMission.parameters.waypointAutoDroneHeading ?? true);
-      setWaypointAutoGimbalYaw(activeMission.parameters.waypointAutoGimbalYaw ?? true);
+      setGlobalHeadingMode(
+        activeMission.parameters.globalHeadingMode ??
+          (activeMission.parameters.waypointAutoDroneHeading ? 'followWayline' : 'manually')
+      );
+      setGimbalPitchMode(activeMission.parameters.gimbalPitchMode ?? 'manual');
+      setWaypointAutoGimbalYaw(activeMission.parameters.waypointAutoGimbalYaw ?? false);
       setWaypointTurnDistance(activeMission.parameters.waypointTurnDistance ?? 0.5);
       setAlwaysTerrainFollow(activeMission.parameters.alwaysTerrainFollow ?? false);
       setTerrainFollowAccuracy(activeMission.parameters.terrainFollowAccuracy ?? 2);
@@ -263,6 +273,20 @@ export const FlightPlanner = () => {
       setElevationTolerance(activeMission.parameters.elevationTolerance ?? 1);
     }
   }, [activeMissionId]);
+
+  // "Selected Waypoint Parameters" can re-base the route height (waypoint 1) and can
+  // switch the mission to manual aircraft heading — mirror both back into these inputs.
+  useEffect(() => {
+    if (activeMission) {
+      setAltitude(activeMission.parameters.altitude);
+    }
+  }, [activeMission?.parameters.altitude]);
+
+  useEffect(() => {
+    if (activeMission) {
+      setWaypointAutoDroneHeading(activeMission.parameters.waypointAutoDroneHeading ?? true);
+    }
+  }, [activeMission?.parameters.waypointAutoDroneHeading]);
 
   useEffect(() => {
     const hasEditableArea = !!activeMission?.aoi;
@@ -409,6 +433,8 @@ export const FlightPlanner = () => {
         waypointHoverEnabled,
         waypointHoverTime,
         waypointAutoDroneHeading,
+        globalHeadingMode,
+        gimbalPitchMode,
         waypointAutoGimbalYaw,
         waypointTurnDistance,
         alwaysTerrainFollow,
@@ -453,6 +479,8 @@ export const FlightPlanner = () => {
         waypointHoverEnabled,
         waypointHoverTime,
         waypointAutoDroneHeading,
+        globalHeadingMode,
+        gimbalPitchMode,
         waypointAutoGimbalYaw,
         waypointTurnDistance,
         alwaysTerrainFollow,
@@ -1629,15 +1657,33 @@ export const FlightPlanner = () => {
                     />
                   </label>
 
-                  <label className="waypoint-inline-toggle">
-                    <input
-                      type="checkbox"
-                      checked={waypointAutoDroneHeading}
-                      onChange={(e) => setWaypointAutoDroneHeading(e.target.checked)}
-                    />
-                    Auto Drone Heading (Follow Wayline)
+                  <label className="waypoint-compact-field">
+                    Aircraft Yaw:
+                    <select
+                      value={globalHeadingMode}
+                      onChange={(e) => {
+                        const mode = e.target.value as typeof globalHeadingMode;
+                        setGlobalHeadingMode(mode);
+                        setWaypointAutoDroneHeading(mode === 'followWayline');
+                      }}
+                    >
+                      <option value="manually">Manual</option>
+                      <option value="followWayline">Along the Route</option>
+                      <option value="smoothTransition">Custom (use Drone Yaw)</option>
+                    </select>
                   </label>
                 </div>
+
+                <label className="waypoint-compact-field">
+                  Gimbal Control:
+                  <select
+                    value={gimbalPitchMode}
+                    onChange={(e) => setGimbalPitchMode(e.target.value as typeof gimbalPitchMode)}
+                  >
+                    <option value="manual">Manual</option>
+                    <option value="usePointSetting">For Each Waypoint</option>
+                  </select>
+                </label>
 
                 <label className="waypoint-compact-field">
                   Gimbal Pitch (°):
@@ -1734,6 +1780,9 @@ export const FlightPlanner = () => {
                     step="0.1"
                   />
                 </label>
+
+                <h4 className="waypoint-subsection-title">Selected Waypoint Parameters</h4>
+                <SelectedWaypointPanel missionId={activeMissionId} />
               </div>
             )}
           </>

@@ -61,6 +61,63 @@ const mavic3eZoomCamera: CameraSpec = {
   imageFormat: ['JPEG'],
 };
 
+/*
+ * DJI Mavic 3T (Mavic 3 Thermal / M3T) — triple payload.
+ *
+ * Published DJI figures: wide 1/2" 48 MP, DFOV 84°, 24 mm equivalent, f/2.8;
+ * tele 1/2" 12 MP, DFOV 15°, 162 mm equivalent, f/4.4; thermal 640×512
+ * uncooled VOx, DFOV 61°, 40 mm equivalent, f/1.0, 12 µm pixel pitch.
+ *
+ * Actual focal lengths below are derived from the published 35 mm-equivalent
+ * focal lengths and the physical sensor diagonal, which keeps GSD and footprint
+ * maths self-consistent with sensorWidth / sensorHeight.
+ */
+
+// Mavic 3T - Wide Camera (1/2" CMOS, 48 MP)
+const mavic3tWideCamera: CameraSpec = {
+  id: 'm3t-wide',
+  name: 'Mavic 3T Wide Camera',
+  sensorWidth: 6.4,
+  sensorHeight: 4.8,
+  imageWidth: 8000,
+  imageHeight: 6000,
+  focalLength: 4.4, // 24 mm equivalent / 5.41 crop factor
+  pixelPitch: 0.8,
+  aperture: 'f/2.8',
+  shutterSpeed: 1 / 2000,
+  imageFormat: ['JPEG'],
+};
+
+// Mavic 3T - Tele / Zoom Camera (1/2" CMOS, 12 MP)
+const mavic3tTeleCamera: CameraSpec = {
+  id: 'm3t-tele',
+  name: 'Mavic 3T Tele Camera',
+  sensorWidth: 6.4,
+  sensorHeight: 4.8,
+  imageWidth: 4000,
+  imageHeight: 3000,
+  focalLength: 30.0, // 162 mm equivalent / 5.41 crop factor
+  pixelPitch: 1.6,
+  aperture: 'f/4.4',
+  shutterSpeed: 1 / 2000,
+  imageFormat: ['JPEG'],
+};
+
+// Mavic 3T - Thermal Camera (uncooled VOx microbolometer, 640x512)
+const mavic3tThermalCamera: CameraSpec = {
+  id: 'm3t-ir',
+  name: 'Mavic 3T Thermal Camera',
+  sensorWidth: 7.68, // 640 px x 12 µm
+  sensorHeight: 6.14, // 512 px x 12 µm
+  imageWidth: 640,
+  imageHeight: 512,
+  focalLength: 9.1, // 40 mm equivalent / 4.40 crop factor
+  pixelPitch: 12.0,
+  aperture: 'f/1.0',
+  shutterSpeed: 1 / 30, // thermal stream is 30 fps; no mechanical shutter
+  imageFormat: ['R-JPEG'],
+};
+
 // DJI Zenmuse P1 with 35mm lens
 const p1_35mmCamera: CameraSpec = {
   id: 'p1-35mm',
@@ -196,6 +253,21 @@ export const mavic3eDrone: DroneSpec = {
   rtk: false,
 };
 
+// DJI Mavic 3T (Thermal) Drone
+export const mavic3tDrone: DroneSpec = {
+  id: 'mavic3t',
+  name: 'DJI Mavic 3T',
+  manufacturer: 'DJI',
+  cameras: [mavic3tWideCamera, mavic3tTeleCamera, mavic3tThermalCamera],
+  maxSpeed: 21, // m/s (S mode, sea level, no wind)
+  cruiseSpeed: 10, // m/s (recommended for mapping / inspection)
+  maxAltitude: 500, // meters (software limit, regulatory limits apply)
+  batteryLife: 45, // minutes (hover, no wind)
+  maxWindSpeed: 12, // m/s
+  weight: 0.92, // kg (takeoff weight)
+  rtk: false, // RTK module is an optional add-on
+};
+
 // DJI Matrice 300 RTK Drone
 export const matrice300Drone: DroneSpec = {
   id: 'm300-rtk',
@@ -242,7 +314,13 @@ export const customSonyDrone: DroneSpec = {
 };
 
 // All supported drones
-export const DRONES: DroneSpec[] = [mavic3eDrone, matrice300Drone, matrice4eDrone, customSonyDrone];
+export const DRONES: DroneSpec[] = [
+  mavic3eDrone,
+  mavic3tDrone,
+  matrice300Drone,
+  matrice4eDrone,
+  customSonyDrone,
+];
 
 // Helper functions
 export const getDroneById = (id: string): DroneSpec | undefined => {
