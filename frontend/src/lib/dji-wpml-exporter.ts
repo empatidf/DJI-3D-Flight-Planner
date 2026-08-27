@@ -316,16 +316,31 @@ const resolveWaypointHeading = (
     : { headingMode: 'smoothTransition', headingAngle: normalizeYaw(parameters.droneYaw) };
 };
 
-/** Effective gimbal attitude at one waypoint, per-point value winning over the mission value. */
+/**
+ * Effective gimbal attitude at one waypoint, per-point value winning over the mission value.
+ *
+ * `controlled` says whether the route should command the gimbal at all. With
+ * Gimbal Control = Manual the operator flies the gimbal, so the route must stay
+ * out of the way — no gimbalRotate action, no commanded angles — unless this
+ * particular waypoint carries an explicit gimbal override.
+ */
 const resolveWaypointGimbal = (
   parameters: FlightParameters,
   override?: WaypointOverride
-): { pitch: number; yaw: number; yawEnabled: boolean } => {
+): { controlled: boolean; pitch: number; yaw: number; yawEnabled: boolean } => {
+  const hasPointOverride = override?.gimbalPitch !== undefined || override?.gimbalYaw !== undefined;
+  const controlled = resolveGimbalPitchMode(parameters) === 'usePointSetting' || hasPointOverride;
+
+  if (!controlled) {
+    return { controlled: false, pitch: 0, yaw: 0, yawEnabled: false };
+  }
+
   const pitch = override?.gimbalPitch ?? parameters.gimbalPitch;
   const explicitYaw = override?.gimbalYaw;
   const yawEnabled = explicitYaw !== undefined || !(parameters.waypointAutoGimbalYaw ?? false);
 
   return {
+    controlled: true,
     pitch: parseWpmlFloat(pitch, -90),
     yaw: yawEnabled ? normalizeYaw(explicitYaw ?? parameters.gimbalYaw) : 0,
     yawEnabled,
@@ -344,31 +359,33 @@ const buildGlobalActionXml = (
   startActionId: number
 ): { xml: string[]; nextActionId: number } => {
   const override = waypoint.override;
-  const gimbalPitch = override?.gimbalPitch ?? parameters.gimbalPitch;
-  const explicitGimbalYaw = override?.gimbalYaw;
-  const useAutoGimbalYaw = explicitGimbalYaw === undefined && (parameters.waypointAutoGimbalYaw ?? false);
-  const gimbalYaw = explicitGimbalYaw ?? parameters.gimbalYaw;
+  const gimbal = resolveWaypointGimbal(parameters, override);
 
   const xml: string[] = [];
   let actionId = startActionId;
 
-  xml.push(`        <wpml:action>
+  // Only command the gimbal when the route is meant to (Gimbal Control =
+  // "For Each Waypoint", or this waypoint has its own angle). Under Manual the
+  // aircraft keeps whatever attitude the operator sets.
+  if (gimbal.controlled) {
+    xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
             <wpml:gimbalHeadingYawBase>aircraft</wpml:gimbalHeadingYawBase>
             <wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>
             <wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>
-            <wpml:gimbalPitchRotateAngle>${gimbalPitch}</wpml:gimbalPitchRotateAngle>
+            <wpml:gimbalPitchRotateAngle>${formatWpmlFloat(gimbal.pitch, -90, 2)}</wpml:gimbalPitchRotateAngle>
             <wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>
             <wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>
-            <wpml:gimbalYawRotateEnable>${useAutoGimbalYaw ? 0 : 1}</wpml:gimbalYawRotateEnable>
-            <wpml:gimbalYawRotateAngle>${useAutoGimbalYaw ? 0 : normalizeYaw(gimbalYaw)}</wpml:gimbalYawRotateAngle>
+            <wpml:gimbalYawRotateEnable>${gimbal.yawEnabled ? 1 : 0}</wpml:gimbalYawRotateEnable>
+            <wpml:gimbalYawRotateAngle>${formatWpmlFloat(gimbal.yaw, 0, 2)}</wpml:gimbalYawRotateAngle>
             <wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>
             <wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>
             <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
           </wpml:actionActuatorFuncParam>
         </wpml:action>`);
+  }
 
   if (parameters.waypointHoverEnabled) {
     xml.push(`        <wpml:action>

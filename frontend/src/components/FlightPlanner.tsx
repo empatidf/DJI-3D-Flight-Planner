@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react';
 import { DRONES, type DroneSpec, type CameraSpec } from '../lib/drone-specs';
 import { calculateFlightPlan } from '../lib/flight-calculations';
 import { useMissionStore } from '../stores/mission-store';
+import type { FlightParameters } from '../stores/mission-store';
 import { importKMLFile, importWaypointKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
 import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints, decimateByElevationTolerance } from '../lib/terrain-sampler';
@@ -409,6 +410,37 @@ export const FlightPlanner = () => {
     }
   };
 
+  /**
+   * The panel's controls live in local state and only reach the store on "Save
+   * Parameters". Anything that produces output (export) must read from here, not
+   * from the stored mission, or the KMZ silently lags behind what the user sees.
+   */
+  const buildCurrentParameters = (): FlightParameters => ({
+    altitude,
+    speed,
+    forwardOverlap,
+    sideOverlap,
+    flightAngle,
+    gimbalPitch,
+    gimbalYaw,
+    droneYaw,
+    waypointTakePhoto,
+    waypointRecordVideo,
+    waypointHoverEnabled,
+    waypointHoverTime,
+    waypointAutoDroneHeading,
+    globalHeadingMode,
+    gimbalPitchMode,
+    waypointAutoGimbalYaw,
+    waypointTurnDistance,
+    alwaysTerrainFollow,
+    terrainFollowAccuracy,
+    terrainFollowMinDist,
+    terrainFollowSkipPoints,
+    elevationToleranceEnabled,
+    elevationTolerance,
+  });
+
   const handleUpdateMission = () => {
     if (!activeMissionId) {
       setStatusMessage('Please select or create a mission first');
@@ -419,31 +451,7 @@ export const FlightPlanner = () => {
     updateMission(activeMissionId, {
       drone: selectedDrone,
       camera: selectedCamera,
-      parameters: {
-        altitude,
-        speed,
-        forwardOverlap,
-        sideOverlap,
-        flightAngle,
-        gimbalPitch,
-        gimbalYaw,
-        droneYaw,
-        waypointTakePhoto,
-        waypointRecordVideo,
-        waypointHoverEnabled,
-        waypointHoverTime,
-        waypointAutoDroneHeading,
-        globalHeadingMode,
-        gimbalPitchMode,
-        waypointAutoGimbalYaw,
-        waypointTurnDistance,
-        alwaysTerrainFollow,
-        terrainFollowAccuracy,
-        terrainFollowMinDist,
-        terrainFollowSkipPoints,
-        elevationToleranceEnabled,
-        elevationTolerance,
-      },
+      parameters: buildCurrentParameters(),
     });
 
     setStatusMessage('Flight parameters saved!');
@@ -548,7 +556,22 @@ export const FlightPlanner = () => {
 
     try {
       setStatusMessage('Exporting to DJI WPML format...');
-      const kmzBlob = await exportToDJI(activeMission);
+
+      // Export exactly what the panel currently shows, and persist it in the same
+      // step so the stored mission and the KMZ can never disagree.
+      const missionToExport = {
+        ...activeMission,
+        drone: selectedDrone,
+        camera: selectedCamera,
+        parameters: buildCurrentParameters(),
+      };
+      updateMission(activeMission.id, {
+        drone: missionToExport.drone,
+        camera: missionToExport.camera,
+        parameters: missionToExport.parameters,
+      });
+
+      const kmzBlob = await exportToDJI(missionToExport);
       downloadKMZ(kmzBlob, activeMission.name || 'mission');
       setStatusMessage('✓ Export successful! File downloaded.');
       setTimeout(() => setStatusMessage(''), 3000);
