@@ -90,6 +90,10 @@ export interface Mission {
   flightLines: FlightLine[];
   layerSnapshot?: Layer[];
   visible: boolean;
+  /** Marked as already flown — shown in red in the mission list. */
+  flown?: boolean;
+  /** Moved to the Archived tab: read-only and hidden on the map by default. */
+  archived?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -154,6 +158,9 @@ interface MissionStore {
   setActiveMission: (id: string | null) => void;
   getActiveMission: () => Mission | null;
   toggleMissionVisibility: (id: string) => void;
+  setMissionsVisibility: (ids: string[], visible: boolean) => void;
+  toggleMissionFlown: (id: string) => void;
+  setMissionArchived: (id: string, archived: boolean) => void;
 
   // Per-waypoint actions (operate on flightLines[0] of the given mission)
   setSelectedWaypointIndex: (index: number | null) => void;
@@ -305,6 +312,37 @@ export const useMissionStore = create<MissionStore>()(
           missions: state.missions.map((m) =>
             m.id === id ? { ...m, visible: !m.visible } : m
           ),
+        }));
+      },
+
+      /** Bulk show/hide, used by the "Show all" / "Hide all" buttons per tab. */
+      setMissionsVisibility: (ids, visible) => {
+        const target = new Set(ids);
+        set((state) => ({
+          missions: state.missions.map((m) => (target.has(m.id) ? { ...m, visible } : m)),
+        }));
+      },
+
+      toggleMissionFlown: (id) => {
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.id === id ? { ...m, flown: !m.flown, updatedAt: new Date() } : m
+          ),
+        }));
+      },
+
+      /**
+       * Archiving hides the mission on the map and drops it as the active mission,
+       * so the Flight Planning panel can never edit an archived route. Restoring
+       * puts it back in the working set and makes it visible again.
+       */
+      setMissionArchived: (id, archived) => {
+        set((state) => ({
+          missions: state.missions.map((m) =>
+            m.id === id ? { ...m, archived, visible: !archived, updatedAt: new Date() } : m
+          ),
+          activeMissionId:
+            archived && state.activeMissionId === id ? null : state.activeMissionId,
         }));
       },
 

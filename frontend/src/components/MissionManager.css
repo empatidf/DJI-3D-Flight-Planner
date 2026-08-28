@@ -441,3 +441,148 @@
     max-height: 300px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Tabs: active missions vs archive                                    */
+/* ------------------------------------------------------------------ */
+
+.mission-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 0;
+  flex: none;
+}
+
+.mission-tabs button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: #6c757d;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mission-tabs button:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: #343a40;
+}
+
+.mission-tabs button.is-active {
+  color: #0d6efd;
+  border-bottom-color: #0d6efd;
+  background: rgba(13, 110, 253, 0.07);
+}
+
+.tab-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.1);
+  color: inherit;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.mission-tabs button.is-active .tab-count {
+  background: #0d6efd;
+  color: #fff;
+}
+
+.archive-hint {
+  margin: 8px 10px 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #f1f3f5;
+  color: #6c757d;
+  font-size: 10.5px;
+  line-height: 1.4;
+  flex: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Flown / archived mission rows                                       */
+/* ------------------------------------------------------------------ */
+
+.mission-item.is-flown {
+  background: #fdecec;
+  border-color: #f1a9a9;
+}
+
+.mission-item.is-flown:hover {
+  background: #fbdcdc;
+  border-color: #e88a8a;
+}
+
+.mission-item.is-flown.active {
+  border-color: #d64545;
+}
+
+.mission-badge.is-flown {
+  background: #d64545;
+}
+
+.mission-item.is-archived {
+  background: #f8f9fa;
+  border-style: dashed;
+  border-color: #ced4da;
+  opacity: 0.9;
+}
+
+.mission-item.is-archived .mission-name {
+  cursor: default;
+  color: #6c757d;
+}
+
+.mission-item.is-archived.is-flown {
+  background: #faeeee;
+  border-color: #e0b4b4;
+}
+
+/* Bulk show/hide row, shown above the list on both tabs */
+
+.mission-bulk-visibility {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 0;
+  flex: none;
+}
+
+.bulk-count {
+  flex: 1;
+  color: #6c757d;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.mission-bulk-visibility button {
+  padding: 3px 9px;
+  border: 1px solid #ced4da;
+  border-radius: 5px;
+  background: #fff;
+  color: #495057;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mission-bulk-visibility button:hover:not(:disabled) {
+  background: #f1f3f5;
+  border-color: #adb5bd;
+  color: #212529;
+}
+
+.mission-bulk-visibility button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

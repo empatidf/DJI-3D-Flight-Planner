@@ -85,7 +85,11 @@ export const MissionManager = () => {
   const setLayers = useMissionStore((state) => state.setLayers);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
   const toggleMissionVisibility = useMissionStore((state) => state.toggleMissionVisibility);
+  const setMissionsVisibility = useMissionStore((state) => state.setMissionsVisibility);
+  const toggleMissionFlown = useMissionStore((state) => state.toggleMissionFlown);
+  const setMissionArchived = useMissionStore((state) => state.setMissionArchived);
 
+  const [tab, setTab] = useState<'active' | 'archived'>('active');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newMissionName, setNewMissionName] = useState('');
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
@@ -241,6 +245,22 @@ export const MissionManager = () => {
     }
   };
 
+  const handleToggleFlown = (mission: Mission) => {
+    closeContextMenu();
+    toggleMissionFlown(mission.id);
+  };
+
+  const handleArchive = (mission: Mission) => {
+    closeContextMenu();
+    setMissionArchived(mission.id, true);
+  };
+
+  const handleRestore = (mission: Mission) => {
+    closeContextMenu();
+    setMissionArchived(mission.id, false);
+    setTab('active');
+  };
+
   const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -268,33 +288,72 @@ export const MissionManager = () => {
     ? missions.find((m) => m.id === contextMenu.missionId) ?? null
     : null;
 
+  const activeMissions = missions.filter((mission) => !mission.archived);
+  const archivedMissions = missions.filter((mission) => mission.archived);
+  const isArchiveTab = tab === 'archived';
+  const visibleMissions = isArchiveTab ? archivedMissions : activeMissions;
+
+  // "Show all" / "Hide all" act on the tab you are looking at, never the other one.
+  const shownCount = visibleMissions.filter((mission) => mission.visible).length;
+  const setAllVisible = (visible: boolean) =>
+    setMissionsVisibility(
+      visibleMissions.map((mission) => mission.id),
+      visible
+    );
+
   return (
     <div className="mission-manager">
       <h2>Missions</h2>
 
-      <div className="mission-actions">
+      <div className="mission-tabs" role="tablist">
         <button
-          className="btn-action btn-create"
-          onClick={() => setShowCreateForm(!showCreateForm)}
-          title="Create New Mission"
+          type="button"
+          role="tab"
+          aria-selected={!isArchiveTab}
+          className={!isArchiveTab ? 'is-active' : ''}
+          onClick={() => setTab('active')}
         >
-          ✚ New Mission
+          Missions <span className="tab-count">{activeMissions.length}</span>
         </button>
         <button
-          className="btn-action btn-import-mission"
-          onClick={() => fileInputRef.current?.click()}
-          title="Import Mission from JSON"
+          type="button"
+          role="tab"
+          aria-selected={isArchiveTab}
+          className={isArchiveTab ? 'is-active' : ''}
+          onClick={() => {
+            setTab('archived');
+            setShowCreateForm(false);
+          }}
         >
-          ↥ Import Mission
+          Archived <span className="tab-count">{archivedMissions.length}</span>
         </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".json"
-          style={{ display: 'none' }}
-          onChange={handleImportFile}
-        />
       </div>
+
+      {!isArchiveTab && (
+        <div className="mission-actions">
+          <button
+            className="btn-action btn-create"
+            onClick={() => setShowCreateForm(!showCreateForm)}
+            title="Create New Mission"
+          >
+            ✚ New Mission
+          </button>
+          <button
+            className="btn-action btn-import-mission"
+            onClick={() => fileInputRef.current?.click()}
+            title="Import Mission from JSON"
+          >
+            ↥ Import Mission
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            style={{ display: 'none' }}
+            onChange={handleImportFile}
+          />
+        </div>
+      )}
 
       {importError && (
         <div className="import-error">
@@ -320,14 +379,53 @@ export const MissionManager = () => {
         </div>
       )}
 
+      {isArchiveTab && archivedMissions.length > 0 && (
+        <div className="archive-hint">
+          Archived missions are read-only and stay hidden on the map until you show them.
+        </div>
+      )}
+
+      {visibleMissions.length > 0 && (
+        <div className="mission-bulk-visibility">
+          <span className="bulk-count">
+            {shownCount} / {visibleMissions.length} shown
+          </span>
+          <button
+            type="button"
+            onClick={() => setAllVisible(true)}
+            disabled={shownCount === visibleMissions.length}
+            title={isArchiveTab ? 'Show all archived missions on the map' : 'Show all missions on the map'}
+          >
+            Show all
+          </button>
+          <button
+            type="button"
+            onClick={() => setAllVisible(false)}
+            disabled={shownCount === 0}
+            title={isArchiveTab ? 'Hide all archived missions' : 'Hide all missions'}
+          >
+            Hide all
+          </button>
+        </div>
+      )}
+
       <div className="mission-list">
-        {missions.length === 0 ? (
-          <div className="empty-state">No missions yet. Create one to start!</div>
+        {visibleMissions.length === 0 ? (
+          <div className="empty-state">
+            {isArchiveTab ? 'No archived missions.' : 'No missions yet. Create one to start!'}
+          </div>
         ) : (
-          missions.map((mission) => (
+          visibleMissions.map((mission) => (
             <div
               key={mission.id}
-              className={`mission-item ${mission.id === activeMissionId ? 'active' : ''}`}
+              className={[
+                'mission-item',
+                mission.id === activeMissionId ? 'active' : '',
+                mission.flown ? 'is-flown' : '',
+                mission.archived ? 'is-archived' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
             >
               <button
                 className="btn-visibility"
@@ -354,13 +452,14 @@ export const MissionManager = () => {
               ) : (
                 <div
                   className="mission-name"
-                  onClick={() => handleSelectMission(mission.id)}
-                  title="Click to select"
+                  onClick={() => !mission.archived && handleSelectMission(mission.id)}
+                  title={mission.archived ? 'Archived — restore it to edit' : 'Click to select'}
                 >
                   {mission.name}
                   {getMissionTag(mission) && (
                     <span className="mission-badge">{getMissionTag(mission)}</span>
                   )}
+                  {mission.flown && <span className="mission-badge is-flown">Flown</span>}
                 </div>
               )}
 
@@ -390,23 +489,39 @@ export const MissionManager = () => {
             className="context-menu"
             style={{
               position: 'fixed',
-              ...(contextMenu.buttonBottom + 185 > window.innerHeight
+              ...(contextMenu.buttonBottom + (contextMission.archived ? 150 : 275) > window.innerHeight
                 ? { bottom: window.innerHeight - contextMenu.buttonTop + 4 }
                 : { top: contextMenu.buttonBottom + 4 }),
               right: contextMenu.right,
               zIndex: 9999,
             }}
           >
-            <button onClick={() => startRename(contextMission)}>
-              <span className="menu-icon">✏️</span> Rename
-            </button>
-            <button onClick={() => handleDuplicate(contextMission)}>
-              <span className="menu-icon">⧉</span> Duplicate
-            </button>
+            {contextMission.archived ? (
+              <button onClick={() => handleRestore(contextMission)}>
+                <span className="menu-icon">↩</span> Restore to Missions
+              </button>
+            ) : (
+              <>
+                <button onClick={() => startRename(contextMission)}>
+                  <span className="menu-icon">✏️</span> Rename
+                </button>
+                <button onClick={() => handleDuplicate(contextMission)}>
+                  <span className="menu-icon">⧉</span> Duplicate
+                </button>
+                <div className="context-menu-separator" />
+                <button onClick={() => handleToggleFlown(contextMission)}>
+                  <span className="menu-icon">{contextMission.flown ? '↺' : '✓'}</span>{' '}
+                  {contextMission.flown ? 'Mark Not Flown' : 'Mark Flown'}
+                </button>
+                <button onClick={() => handleArchive(contextMission)}>
+                  <span className="menu-icon">🗄️</span> Archive
+                </button>
+              </>
+            )}
+            <div className="context-menu-separator" />
             <button onClick={() => handleExport(contextMission)}>
               <span className="menu-icon">↧</span> Export JSON
             </button>
-            <div className="context-menu-separator" />
             <button className="danger" onClick={() => handleDelete(contextMission.id)}>
               <span className="menu-icon">🗑️</span> Delete
             </button>

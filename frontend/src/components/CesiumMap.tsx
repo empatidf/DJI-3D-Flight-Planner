@@ -24,6 +24,7 @@ import {
   CallbackProperty,
   ConstantPositionProperty,
   ConstantProperty,
+  ColorMaterialProperty,
   CallbackPositionProperty,
   CartographicGeocoderService,
   IonGeocoderService,
@@ -2443,6 +2444,12 @@ export const CesiumMap = () => {
         return;
       }
 
+      // Archived routes are drawn in red so they stand out from live missions
+      // when the user un-hides them from the Archived tab.
+      const routeColor = mission.archived ? Color.RED : Color.YELLOW;
+      const routeMaterial = new ColorMaterialProperty(routeColor);
+      const connectorMaterial = new ColorMaterialProperty(routeColor.withAlpha(0.9));
+
       console.log(`Rendering flight lines for mission ${mission.name}: ${mission.flightLines.length} lines`);
       
       const missionAltitude = mission.parameters.altitude;
@@ -2503,6 +2510,9 @@ export const CesiumMap = () => {
           if (existingLineEntity?.polyline) {
             existingLineEntity.name = `Flight Line ${lineIndex + 1}`;
             existingLineEntity.polyline.positions = new ConstantProperty(positions);
+            // Re-apply on the update path too, so archiving recolours a route
+            // that already has an entity instead of leaving it yellow.
+            existingLineEntity.polyline.material = routeMaterial;
           } else {
             viewer.entities.add({
               id: lineEntityId,
@@ -2510,7 +2520,7 @@ export const CesiumMap = () => {
               polyline: {
                 positions: positions,
                 width: 4,
-                material: Color.YELLOW,
+                material: routeMaterial,
                 clampToGround: false,
                 arcType: 0,
               },
@@ -2546,6 +2556,7 @@ export const CesiumMap = () => {
             if (existingConnector?.polyline) {
               existingConnector.name = `Flight Connector ${drawableIndex + 1}`;
               existingConnector.polyline.positions = new ConstantProperty(connectorPositions);
+              existingConnector.polyline.material = connectorMaterial;
             } else {
               viewer.entities.add({
                 id: connectorEntityId,
@@ -2553,7 +2564,7 @@ export const CesiumMap = () => {
                 polyline: {
                   positions: connectorPositions,
                   width: 3,
-                  material: Color.YELLOW.withAlpha(0.9),
+                  material: connectorMaterial,
                   clampToGround: false,
                   arcType: 0,
                 },
