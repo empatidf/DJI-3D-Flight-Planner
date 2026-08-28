@@ -10,6 +10,7 @@
 
 import { useState } from 'react';
 import { useMissionStore } from '../stores/mission-store';
+import { estimateMissionFlight } from '../lib/flight-calculations';
 import { LayerManager } from './LayerManager';
 import { MissionManager } from './MissionManager';
 import './LeftPanel.css';
@@ -31,12 +32,18 @@ export const LeftPanel = () => {
   const [collapsed, setCollapsed] = useState(false);
 
   const activeMissions = missions.filter((mission) => !mission.archived);
-  const shownCount = activeMissions.filter((mission) => mission.visible).length;
+  const shownMissions = activeMissions.filter((mission) => mission.visible);
   const layersOn = layers.filter((layer) => layer.visible).length;
+
+  // Combined air time of everything currently drawn on the map — the figure you
+  // need when deciding how many of these routes fit in one battery session.
+  const shownMinutes = Math.round(
+    shownMissions.reduce((sum, mission) => sum + estimateMissionFlight(mission).seconds, 0) / 60
+  );
 
   const summary: Record<PanelSection, string> = {
     map: `${VIEW_MODE_LABEL[viewMode] ?? '3D'} · ${layersOn} of ${layers.length} layers on`,
-    missions: `${activeMissions.length} missions · ${shownCount} on map`,
+    missions: `${shownMissions.length} on map · ${shownMinutes} min`,
   };
 
   if (collapsed) {

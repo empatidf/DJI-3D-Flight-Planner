@@ -14,7 +14,7 @@ import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints,
 import { exportToDJI, downloadKMZ, normalizeYaw } from '../lib/dji-wpml-exporter';
 import { calculateDistance } from '../lib/coordinate-transform';
 import { SelectedWaypointPanel } from './WaypointEditors';
-import { APP_VERSION } from '../version';
+import { APP_VERSION_LABEL } from '../version';
 import './FlightPlanner.css';
 
 export const FlightPlanner = () => {
@@ -1096,7 +1096,7 @@ export const FlightPlanner = () => {
         <div className="flight-planner-content">
           <h2 className="flight-planner-title">
         <span>Flight Planning</span>
-        <span className="app-version">{APP_VERSION}</span>
+        <span className="app-version" title={`Version ${APP_VERSION_LABEL}`}>{APP_VERSION_LABEL}</span>
       </h2>
           <div className="empty-state">
             <p>No mission selected.</p>
@@ -1121,7 +1121,7 @@ export const FlightPlanner = () => {
       <div className="flight-planner-content">
       <h2 className="flight-planner-title">
         <span>Flight Planning</span>
-        <span className="app-version">{APP_VERSION}</span>
+        <span className="app-version" title={`Version ${APP_VERSION_LABEL}`}>{APP_VERSION_LABEL}</span>
       </h2>
 
       {/* Status Messages */}

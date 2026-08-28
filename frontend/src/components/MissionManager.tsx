@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useMissionStore } from '../stores/mission-store';
 import type { Mission } from '../stores/mission-store';
 import { DRONES } from '../lib/drone-specs';
+import { estimateMissionFlight } from '../lib/flight-calculations';
 import './MissionManager.css';
 
 const EXPORT_APP = 'dji-3d-flight-planner';
@@ -294,7 +295,11 @@ export const MissionManager = () => {
   const visibleMissions = isArchiveTab ? archivedMissions : activeMissions;
 
   // "Show all" / "Hide all" act on the tab you are looking at, never the other one.
-  const shownCount = visibleMissions.filter((mission) => mission.visible).length;
+  const shownOnMap = visibleMissions.filter((mission) => mission.visible);
+  const shownCount = shownOnMap.length;
+  const shownMinutes = Math.round(
+    shownOnMap.reduce((sum, mission) => sum + estimateMissionFlight(mission).seconds, 0) / 60
+  );
   const setAllVisible = (visible: boolean) =>
     setMissionsVisibility(
       visibleMissions.map((mission) => mission.id),
@@ -387,6 +392,7 @@ export const MissionManager = () => {
         <div className="mission-bulk-visibility">
           <span className="bulk-count">
             {shownCount} / {visibleMissions.length} shown
+            {shownCount > 0 && <b className="bulk-time">{shownMinutes} min</b>}
           </span>
           <button
             type="button"

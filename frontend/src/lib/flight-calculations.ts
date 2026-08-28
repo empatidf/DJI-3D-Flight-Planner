@@ -4,6 +4,7 @@
  */
 
 import type { CameraSpec } from './drone-specs';
+import { calculateDistance } from './coordinate-transform';
 
 /**
  * Calculate Ground Sample Distance (GSD) in cm/pixel
@@ -319,4 +320,33 @@ export const calculateFlightPlan = (
     hasBlurWarning: blurFactor > 1.0,
     hasSpeedWarning: speed > maxSafeSpeed,
   };
+};
+
+/**
+ * Route length and duration for one planned mission, measured along the
+ * waypoints that will actually be flown.
+ *
+ * Shared by the Flight Plan Summary and the left rail's "on map" total so the
+ * two can never report different numbers for the same mission.
+ */
+export const estimateMissionFlight = (
+  mission: { flightLines?: { coordinates: number[][] }[]; parameters: { speed: number } }
+): { distanceM: number; seconds: number } => {
+  const coordinates = (mission.flightLines ?? []).flatMap((line) => line.coordinates ?? []);
+
+  const distanceM = coordinates.slice(1).reduce((sum, coord, index) => {
+    const previous = coordinates[index];
+    if (
+      !Number.isFinite(previous?.[0]) ||
+      !Number.isFinite(previous?.[1]) ||
+      !Number.isFinite(coord?.[0]) ||
+      !Number.isFinite(coord?.[1])
+    ) {
+      return sum;
+    }
+    return sum + calculateDistance(previous, coord);
+  }, 0);
+
+  const speed = mission.parameters.speed;
+  return { distanceM, seconds: speed > 0 ? distanceM / speed : 0 };
 };

@@ -336,3 +336,15 @@
     transparent 3px 6px
   );
 }
+
+/* Air time of everything on the map, next to the shown count */
+.bulk-time {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: var(--wash, #f4f6f9);
+  color: var(--ink, #1b2430);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
