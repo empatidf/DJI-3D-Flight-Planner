@@ -1,0 +1,338 @@
+/*
+ * Left rail shell.
+ *
+ * Palette is deliberately the app's existing one — ink, hairline, wash, the
+ * blue already used for selection and the red already used for flown routes on
+ * the map. A control surface sitting on top of aerial imagery earns nothing
+ * from a new brand colour; it earns legibility from contrast and spacing.
+ */
+
+.rail {
+  --ink: #1b2430;
+  --muted: #6b7885;
+  --edge: #dbe1e8;
+  --wash: #f4f6f9;
+  --surface: #ffffff;
+  --signal: #0d6efd;
+
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 320px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 20px);
+  z-index: 1000;
+
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(16, 24, 40, 0.18);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  color: var(--ink);
+}
+
+/* Collapse to a single chip so the map can be read edge to edge */
+
+.rail.is-collapsed {
+  width: auto;
+  border-radius: 8px;
+}
+
+.rail-restore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rail-restore:hover {
+  background: var(--wash);
+}
+
+.rail-restore-icon {
+  color: var(--muted);
+}
+
+.rail-hide {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rail-hide:hover {
+  background: var(--wash);
+  border-color: var(--edge);
+  color: var(--ink);
+}
+
+/* Sections: the open one takes the slack, the closed one is a summary bar */
+
+.rail-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--edge);
+}
+
+.rail-section:last-child {
+  border-bottom: 0;
+}
+
+.rail-section.is-open {
+  flex: 1 1 auto;
+}
+
+.rail-section h2 {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.rail-section-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 11px 34px 11px 12px;
+  border: 0;
+  background: var(--wash);
+  color: var(--ink);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rail-section.is-open > h2 > .rail-section-bar {
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--edge);
+}
+
+.rail-section-bar:hover {
+  background: #eef1f5;
+}
+
+.rail-section-bar:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+
+.rail-caret {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* Instrument-legend treatment: small, wide-tracked, unmistakably a label */
+.rail-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/* Counts read as data, so they get the tabular face used elsewhere in the app */
+.rail-section-summary {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-section-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+/* The two managers are now content, not windows: the rail owns the chrome. */
+.rail-section-body > .layer-manager,
+.rail-section-body > .mission-manager {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Map section                                                         */
+/* ------------------------------------------------------------------ */
+
+.rail .layer-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+/* View mode was a dropdown: two clicks to change something you change often. */
+.view-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  padding: 2px;
+  background: var(--wash);
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+}
+
+.view-mode-switch button {
+  padding: 5px 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.view-mode-switch button:hover {
+  color: var(--ink);
+}
+
+.view-mode-switch button.is-active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.14);
+}
+
+/* Setup is a once-a-year job — it gets a disclosure, not permanent real estate. */
+.map-setup {
+  margin-top: auto;
+  border: 1px solid var(--edge);
+  border-radius: 7px;
+  background: var(--wash);
+}
+
+.map-setup > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.map-setup > summary::-webkit-details-marker {
+  display: none;
+}
+
+.map-setup > summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.map-setup[open] > summary::before {
+  content: '▾';
+}
+
+.setup-state {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.setup-state.is-ok {
+  color: #1a7f4b;
+}
+
+.setup-state.is-missing {
+  color: #b4530a;
+}
+
+.token-hint {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ */
+/* Missions section                                                    */
+/* ------------------------------------------------------------------ */
+
+.rail .mission-manager {
+  overflow: hidden;
+}
+
+/*
+ * Signature: a status spine on the leading edge of every mission row.
+ * Selection, flown and archived are three different facts about a route, and
+ * badges scattered mid-row made you read each one. On the edge they line up
+ * into a single column you can scan in one pass.
+ */
+.rail .mission-item {
+  position: relative;
+  padding-left: 14px;
+  border-width: 1px;
+}
+
+.rail .mission-item::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--edge);
+}
+
+.rail .mission-item.active::before {
+  background: var(--signal);
+}
+
+.rail .mission-item.is-flown::before {
+  background: #d64545;
+}
+
+.rail .mission-item.is-archived::before {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--muted) 0 3px,
+    transparent 3px 6px
+  );
+}

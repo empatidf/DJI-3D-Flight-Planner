@@ -200,73 +200,24 @@ export const LayerManager = () => {
 
   return (
     <div className="layer-manager">
-      <h3>Cesium Layer Manager</h3>
-
-      <div className="token-section">
-        <div className="token-section-title">Add Cesium Token</div>
-        <input
-          className="token-input"
-          type="password"
-          value={tokenInput}
-          onChange={(e) => setTokenInput(e.target.value)}
-          placeholder="Paste Cesium Ion access token"
-          disabled={!!cesiumToken && !isTokenEditing}
-        />
-        <div className="token-actions">
+      <div className="view-mode-switch" role="group" aria-label="Map view mode">
+        {(
+          [
+            ['SCENE3D', '3D'],
+            ['COLUMBUS_VIEW', '2.5D'],
+            ['SCENE2D', '2D'],
+          ] as const
+        ).map(([mode, label]) => (
           <button
-            className="btn-action token-save"
-            onClick={cesiumToken && !isTokenEditing ? handleStartTokenEdit : handleSaveToken}
-            disabled={isCheckingToken}
+            key={mode}
+            type="button"
+            className={viewMode === mode ? 'is-active' : ''}
+            aria-pressed={viewMode === mode}
+            onClick={() => setViewMode(mode)}
           >
-            {isCheckingToken ? 'Checking...' : cesiumToken && !isTokenEditing ? 'Change Token' : 'Save Token'}
+            {label}
           </button>
-          <button className="btn-action token-delete" onClick={handleDeleteToken} disabled={!cesiumToken}>
-            Delete
-          </button>
-        </div>
-        <div className="token-saved-text">
-          {cesiumToken ? `Saved: ${maskToken(cesiumToken)} (Added)` : 'Saved: No token'}
-        </div>
-        {tokenStatus && <div className={`token-status ${tokenStatus.type}`}>{tokenStatus.message}</div>}
-      </div>
-      
-      {/* Add Cesium Ion Asset */}
-      <div className="layer-actions">
-        <select
-          className="layer-asset-select"
-          value={selectedAssetId}
-          onChange={(e) => setSelectedAssetId(e.target.value)}
-          disabled={isLoadingAssets || !cesiumToken}
-        >
-          <option value="">
-            {!cesiumToken ? 'Add token to load assets' : isLoadingAssets ? 'Loading assets...' : 'Select Cesium Ion Asset'}
-          </option>
-          {cesiumAssets.map(asset => (
-            <option key={asset.id} value={asset.id}>
-              {asset.name} ({asset.type})
-            </option>
-          ))}
-        </select>
-        <button
-          className="btn-action"
-          onClick={handleAddCesiumAsset}
-          disabled={!selectedAssetId || isLoadingAssets || !cesiumToken}
-          title="Add selected Cesium Ion asset"
-        >
-          + Add Asset
-        </button>
-      </div>
-      
-      <div className="view-mode-selector">
-        <label>View Mode:</label>
-        <select
-          value={viewMode}
-          onChange={(e) => setViewMode(e.target.value as any)}
-        >
-          <option value="SCENE3D">3D</option>
-          <option value="SCENE2D">2D</option>
-          <option value="COLUMBUS_VIEW">2.5D</option>
-        </select>
+        ))}
       </div>
 
       <div className="layers-list">
@@ -300,7 +251,7 @@ export const LayerManager = () => {
                 </button>
               )}
             </div>
-            
+
             {layer.visible && (
               <div className="layer-controls">
                 <label>
@@ -322,6 +273,68 @@ export const LayerManager = () => {
           </div>
         ))}
       </div>
+
+      {cesiumToken && (
+        <div className="layer-actions">
+          <select
+            className="layer-asset-select"
+            value={selectedAssetId}
+            onChange={(e) => setSelectedAssetId(e.target.value)}
+            disabled={isLoadingAssets}
+          >
+            <option value="">{isLoadingAssets ? 'Loading your assets…' : 'Add a layer from Cesium Ion'}</option>
+            {cesiumAssets.map(asset => (
+              <option key={asset.id} value={asset.id}>
+                {asset.name} ({asset.type})
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn-action"
+            onClick={handleAddCesiumAsset}
+            disabled={!selectedAssetId || isLoadingAssets}
+            title="Add the selected asset to the map"
+          >
+            + Add
+          </button>
+        </div>
+      )}
+
+      <details className="map-setup" open={!cesiumToken}>
+        <summary>
+          <span>Cesium Ion account</span>
+          <span className={`setup-state ${cesiumToken ? 'is-ok' : 'is-missing'}`}>
+            {cesiumToken ? maskToken(cesiumToken) : 'No token yet'}
+          </span>
+        </summary>
+
+        <div className="token-section">
+          <p className="token-hint">
+            A token lets the map load Cesium Ion imagery, terrain and your own uploaded assets.
+          </p>
+          <input
+            className="token-input"
+            type="password"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            placeholder="Paste your access token"
+            disabled={!!cesiumToken && !isTokenEditing}
+          />
+          <div className="token-actions">
+            <button
+              className="btn-action token-save"
+              onClick={cesiumToken && !isTokenEditing ? handleStartTokenEdit : handleSaveToken}
+              disabled={isCheckingToken}
+            >
+              {isCheckingToken ? 'Checking…' : cesiumToken && !isTokenEditing ? 'Change token' : 'Save token'}
+            </button>
+            <button className="btn-action token-delete" onClick={handleDeleteToken} disabled={!cesiumToken}>
+              Delete
+            </button>
+          </div>
+          {tokenStatus && <div className={`token-status ${tokenStatus.type}`}>{tokenStatus.message}</div>}
+        </div>
+      </details>
     </div>
   );
 };

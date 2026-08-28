@@ -1,6 +1,5 @@
 import { CesiumMap } from './components/CesiumMap'
-import { LayerManager } from './components/LayerManager'
-import { MissionManager } from './components/MissionManager'
+import { LeftPanel } from './components/LeftPanel'
 import { FlightPlanner } from './components/FlightPlanner'
 import { DisclaimerModal } from './components/DisclaimerModal'
 import './App.css'
@@ -10,10 +9,7 @@ function App() {
     <div className="app">
       <DisclaimerModal />
       <CesiumMap />
-      <div className="left-sidebar">
-        <LayerManager />
-        <MissionManager />
-      </div>
+      <LeftPanel />
       <FlightPlanner />
     </div>
   )

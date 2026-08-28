@@ -12,16 +12,6 @@
   flex-direction: column;
 }
 
-.mission-manager h2 {
-  margin: 0;
-  padding: 12px 15px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-bottom: 2px solid rgba(0, 0, 0, 0.1);
-}
-
 /* Action Buttons */
 .mission-actions {
   display: flex;

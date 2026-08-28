@@ -303,8 +303,6 @@ export const MissionManager = () => {
 
   return (
     <div className="mission-manager">
-      <h2>Missions</h2>
-
       <div className="mission-tabs" role="tablist">
         <button
           type="button"
