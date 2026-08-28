@@ -581,7 +581,7 @@ export const SelectedWaypointPanel = ({ missionId }: { missionId: string }) => {
               type="number"
               step="0.1"
               min="0"
-              placeholder={`global ${mission.parameters.waypointTurnDistance ?? 0.5}`}
+              placeholder={`global ${mission.parameters.waypointTurnDistance ?? 0.2}`}
               value={drafts.turnDistance}
               onChange={(e) => writeOverride('turnDistance', e.target.value)}
             />

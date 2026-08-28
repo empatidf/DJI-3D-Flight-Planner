@@ -408,7 +408,7 @@ const buildGlobalActionXml = (
         </wpml:action>`);
   }
 
-  if (parameters.waypointTakePhoto !== false) {
+  if (parameters.waypointTakePhoto === true) {
     xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
@@ -556,7 +556,7 @@ const generateWaypointXML = (
   const turnMode = isRouteEndpoint ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
   const dampingDist = isRouteEndpoint
     ? '0'
-    : formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.5, 0.5, 2);
+    : formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2, 0.2, 2);
 
   return `    <Placemark>
       <Point>
@@ -609,8 +609,8 @@ const generateTemplateWaypointXML = (
   const gimbal = resolveWaypointGimbal(parameters, override);
   const speedValue = formatWpmlFloat(override?.speed ?? parameters.speed, 8, 2);
   const dampingDist = formatWpmlFloat(
-    override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.5,
-    0.5,
+    override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2,
+    0.2,
     2
   );
 

@@ -53,7 +53,7 @@ export const FlightPlanner = () => {
   const [gimbalPitch, setGimbalPitch] = useState<number>(-90);
   const [gimbalYaw, setGimbalYaw] = useState<number>(0);
   const [droneYaw, setDroneYaw] = useState<number>(0);
-  const [waypointTakePhoto, setWaypointTakePhoto] = useState<boolean>(true);
+  const [waypointTakePhoto, setWaypointTakePhoto] = useState<boolean>(false);
   const [waypointRecordVideo, setWaypointRecordVideo] = useState<boolean>(false);
   const [waypointHoverEnabled, setWaypointHoverEnabled] = useState<boolean>(false);
   const [waypointHoverTime, setWaypointHoverTime] = useState<number>(2);
@@ -63,7 +63,7 @@ export const FlightPlanner = () => {
     useState<'followWayline' | 'manually' | 'smoothTransition'>('manually');
   const [gimbalPitchMode, setGimbalPitchMode] = useState<'manual' | 'usePointSetting'>('manual');
   const [waypointAutoGimbalYaw, setWaypointAutoGimbalYaw] = useState<boolean>(false);
-  const [waypointTurnDistance, setWaypointTurnDistance] = useState<number>(0.5);
+  const [waypointTurnDistance, setWaypointTurnDistance] = useState<number>(0.2);
   const [alwaysTerrainFollow, setAlwaysTerrainFollow] = useState<boolean>(false);
   const [terrainFollowAccuracy, setTerrainFollowAccuracy] = useState<number>(2);
   const [terrainFollowMinDist, setTerrainFollowMinDist] = useState<number>(2);
@@ -254,7 +254,7 @@ export const FlightPlanner = () => {
       setGimbalPitch(activeMission.parameters.gimbalPitch);
       setGimbalYaw(activeMission.parameters.gimbalYaw ?? 0);
       setDroneYaw(activeMission.parameters.droneYaw ?? 0);
-      setWaypointTakePhoto(activeMission.parameters.waypointTakePhoto ?? true);
+      setWaypointTakePhoto(activeMission.parameters.waypointTakePhoto ?? false);
       setWaypointRecordVideo(activeMission.parameters.waypointRecordVideo ?? false);
       setWaypointHoverEnabled(activeMission.parameters.waypointHoverEnabled ?? false);
       setWaypointHoverTime(activeMission.parameters.waypointHoverTime ?? 2);
@@ -265,7 +265,7 @@ export const FlightPlanner = () => {
       );
       setGimbalPitchMode(activeMission.parameters.gimbalPitchMode ?? 'manual');
       setWaypointAutoGimbalYaw(activeMission.parameters.waypointAutoGimbalYaw ?? false);
-      setWaypointTurnDistance(activeMission.parameters.waypointTurnDistance ?? 0.5);
+      setWaypointTurnDistance(activeMission.parameters.waypointTurnDistance ?? 0.2);
       setAlwaysTerrainFollow(activeMission.parameters.alwaysTerrainFollow ?? false);
       setTerrainFollowAccuracy(activeMission.parameters.terrainFollowAccuracy ?? 2);
       setTerrainFollowMinDist(activeMission.parameters.terrainFollowMinDist ?? 2);
