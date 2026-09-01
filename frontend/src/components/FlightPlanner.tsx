@@ -40,6 +40,7 @@ export const FlightPlanner = () => {
   const collisionRiskCount = useMissionStore((state) => state.collisionRiskCount);
   const collisionProgress = useMissionStore((state) => state.collisionProgress);
   const collisionEffInterval = useMissionStore((state) => state.collisionEffInterval);
+  const setMissionDefaults = useMissionStore((state) => state.setMissionDefaults);
 
   const activeMission = missions.find(m => m.id === activeMissionId);
 
@@ -397,9 +398,12 @@ export const FlightPlanner = () => {
   const handleDroneChange = (droneId: string) => {
     const drone = DRONES.find((d) => d.id === droneId);
     if (drone) {
+      const nextSpeed = Math.min(speed, drone.cruiseSpeed);
       setSelectedDrone(drone);
       setSelectedCamera(drone.cameras[0]);
-      setSpeed(Math.min(speed, drone.cruiseSpeed));
+      setSpeed(nextSpeed);
+      // Carried into the next new mission.
+      setMissionDefaults({ droneId: drone.id, cameraId: drone.cameras[0].id, speed: nextSpeed });
     }
   };
 
@@ -407,6 +411,7 @@ export const FlightPlanner = () => {
     const camera = selectedDrone.cameras.find((c) => c.id === cameraId);
     if (camera) {
       setSelectedCamera(camera);
+      setMissionDefaults({ droneId: selectedDrone.id, cameraId: camera.id });
     }
   };
 
@@ -454,12 +459,22 @@ export const FlightPlanner = () => {
       parameters: buildCurrentParameters(),
     });
 
+    setMissionDefaults({
+      droneId: selectedDrone.id,
+      cameraId: selectedCamera.id,
+      altitude,
+      speed,
+    });
+
     setStatusMessage('Flight parameters saved!');
     setTimeout(() => setStatusMessage(''), 3000);
   };
 
   const handleAltitudeChange = (newAltitude: number) => {
     setAltitude(newAltitude);
+    // Carried into the next new mission. This already writes to the mission on
+    // every change, so recording it here adds no extra write frequency.
+    setMissionDefaults({ altitude: newAltitude });
 
     if (!activeMissionId) return;
 
@@ -1375,6 +1390,7 @@ export const FlightPlanner = () => {
               type="number"
               value={speed}
               onChange={(e) => setSpeed(Number(e.target.value))}
+              onBlur={() => setMissionDefaults({ speed })}
               min="1"
               max="15"
               step="0.5"
@@ -1384,6 +1400,8 @@ export const FlightPlanner = () => {
               type="range"
               value={speed}
               onChange={(e) => setSpeed(Number(e.target.value))}
+              onMouseUp={() => setMissionDefaults({ speed })}
+              onTouchEnd={() => setMissionDefaults({ speed })}
               min="1"
               max="15"
               step="0.5"

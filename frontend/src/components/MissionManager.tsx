@@ -89,6 +89,7 @@ export const MissionManager = () => {
   const setMissionsVisibility = useMissionStore((state) => state.setMissionsVisibility);
   const toggleMissionFlown = useMissionStore((state) => state.toggleMissionFlown);
   const setMissionArchived = useMissionStore((state) => state.setMissionArchived);
+  const missionDefaults = useMissionStore((state) => state.missionDefaults);
 
   const [tab, setTab] = useState<'active' | 'archived'>('active');
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -112,8 +113,13 @@ export const MissionManager = () => {
       return;
     }
 
-    const defaultDrone = DRONES[0];
-    const defaultCamera = defaultDrone.cameras[0];
+    // Pick up where the last mission left off: same aircraft, payload, height and
+    // speed. Terrain follow is deliberately not carried over — it is expensive and
+    // area-specific, so every new mission starts with it off.
+    const defaultDrone = DRONES.find((drone) => drone.id === missionDefaults.droneId) ?? DRONES[0];
+    const defaultCamera =
+      defaultDrone.cameras.find((camera) => camera.id === missionDefaults.cameraId) ??
+      defaultDrone.cameras[0];
 
     const missionId = addMission({
       name: newMissionName,
@@ -123,8 +129,8 @@ export const MissionManager = () => {
       aoi: null,
       takeoffPoint: null,
       parameters: {
-        altitude: 100,
-        speed: 8,
+        altitude: missionDefaults.altitude ?? 100,
+        speed: Math.min(missionDefaults.speed ?? 8, defaultDrone.cruiseSpeed),
         forwardOverlap: 80,
         sideOverlap: 70,
         flightAngle: 0,

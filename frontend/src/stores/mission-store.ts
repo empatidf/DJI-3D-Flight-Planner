@@ -110,6 +110,22 @@ export interface Layer {
   cesiumAssetType?: 'IMAGERY' | 'TERRAIN' | '3DTILES'; // Cesium Ion asset type
 }
 
+/**
+ * The setup the user last chose, carried into the next new mission.
+ *
+ * Kept separately from the missions themselves because the drone and camera
+ * pickers only live in the Flight Planning panel's local state until the user
+ * presses "Save Parameters" — reading the previous mission would hand back a
+ * stale drone. Terrain follow is deliberately absent: a new mission always
+ * starts with it off.
+ */
+export interface MissionDefaults {
+  droneId?: string;
+  cameraId?: string;
+  altitude?: number;
+  speed?: number;
+}
+
 export interface CameraTarget {
   longitude: number;
   latitude: number;
@@ -150,6 +166,7 @@ interface MissionStore {
   cameraTarget: CameraTarget | null;
   lastMapView: MapViewState | null;
   cesiumToken: string;
+  missionDefaults: MissionDefaults;
   
   // Mission actions
   addMission: (mission: Omit<Mission, 'id' | 'createdAt' | 'updatedAt'>) => string;
@@ -197,11 +214,12 @@ interface MissionStore {
   setShowAreaHeightGuides: (enabled: boolean) => void;
   setShowWaypointHeightGuides: (enabled: boolean) => void;
   setCesiumToken: (token: string) => void;
+  setMissionDefaults: (patch: MissionDefaults) => void;
 }
 
 type PersistedMissionState = Pick<
   MissionStore,
-  'missions' | 'activeMissionId' | 'layers' | 'viewMode' | 'showAreaHeightGuides' | 'showWaypointHeightGuides' | 'cesiumToken' | 'lastMapView'
+  'missions' | 'activeMissionId' | 'layers' | 'viewMode' | 'showAreaHeightGuides' | 'showWaypointHeightGuides' | 'cesiumToken' | 'lastMapView' | 'missionDefaults'
 >;
 
 const defaultLayers: Layer[] = [
@@ -264,6 +282,7 @@ export const useMissionStore = create<MissionStore>()(
       lastMapView: null,
       viewMode: 'SCENE3D',
       cesiumToken: '',
+      missionDefaults: {},
 
       // Mission actions
       addMission: (mission) => {
@@ -583,6 +602,10 @@ export const useMissionStore = create<MissionStore>()(
       setCesiumToken: (token) => {
         set({ cesiumToken: token.trim() });
       },
+
+      setMissionDefaults: (patch) => {
+        set((state) => ({ missionDefaults: { ...state.missionDefaults, ...patch } }));
+      },
     }),
     {
       name: '3d-planer-mission-store',
@@ -596,6 +619,7 @@ export const useMissionStore = create<MissionStore>()(
         showWaypointHeightGuides: state.showWaypointHeightGuides,
         cesiumToken: state.cesiumToken,
         lastMapView: state.lastMapView,
+        missionDefaults: state.missionDefaults,
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<PersistedMissionState>;
@@ -620,6 +644,7 @@ export const useMissionStore = create<MissionStore>()(
           showWaypointHeightGuides: persisted.showWaypointHeightGuides ?? currentState.showWaypointHeightGuides,
           cesiumToken: persisted.cesiumToken ?? currentState.cesiumToken,
           lastMapView: persisted.lastMapView ?? currentState.lastMapView,
+          missionDefaults: persisted.missionDefaults ?? currentState.missionDefaults,
           kmlEditMode: false,
           drawAoiMode: false,
           drawWaypointMode: false,
