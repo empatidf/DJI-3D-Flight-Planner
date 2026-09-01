@@ -294,3 +294,92 @@
     max-width: calc(100vw - 20px);
   }
 }
+
+/* --- Local GeoTIFF layers ------------------------------------------------ */
+
+/* Widen the badge: "LOCAL · IMAGERY" does not fit the Ion badge width. */
+.layer-type-badge.local {
+  min-width: 92px;
+  letter-spacing: 0.3px;
+}
+
+.layer-type-badge.local.imagery {
+  background-color: #2563eb;
+}
+
+.layer-type-badge.local.terrain {
+  background-color: #d97706;
+}
+
+/* Shown instead of the opacity slider when the file still has to be re-opened. */
+.layer-restore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.layer-restore-hint {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b45309;
+}
+
+.layer-restore .btn-action {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: none;
+  border-radius: 4px;
+  background: #f59e0b;
+  color: white;
+  cursor: pointer;
+}
+
+.layer-restore .btn-action:disabled {
+  background: #c2c7d0;
+  cursor: not-allowed;
+}
+
+.local-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.local-file-actions .btn-action {
+  flex: 1 1 auto;
+  padding: 7px 10px;
+  font-size: 12px;
+  border: none;
+  border-radius: 5px;
+  background: #10b981;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.local-file-actions .btn-action:hover:not(:disabled) {
+  background: #0f9f70;
+}
+
+.local-file-actions .btn-action:disabled {
+  background: #c2c7d0;
+  cursor: not-allowed;
+}
+
+/* Status lines carry a multi-line file summary and long GDAL hints. */
+.local-files .token-status {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.local-file-actions .btn-danger {
+  background: #ef4444;
+}
+
+.local-file-actions .btn-danger:hover:not(:disabled) {
+  background: #dc2626;
+}

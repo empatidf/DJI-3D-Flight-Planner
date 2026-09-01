@@ -4,8 +4,25 @@
  */
 
 import React from 'react';
-import { useMissionStore } from '../stores/mission-store';
+import { useMissionStore, type Layer } from '../stores/mission-store';
 import { fetchCesiumAssets, filterImageryAssets, getAssetMetadata, validateCesiumToken, type CesiumIonAsset } from '../lib/cesium-ion-api';
+import {
+  buildLocalLayer,
+  getLocalRegistryVersion,
+  hasLocalEntry,
+  setLocalEntry,
+  subscribeLocalRegistry,
+  type LocalLayerKind,
+} from '../lib/local-tiff/registry';
+import {
+  deleteHandle,
+  ensurePermission,
+  getHandle,
+  isFsaSupported,
+  makeHandleKey,
+  pickTiffFile,
+  putHandle,
+} from '../lib/local-tiff/local-file-store';
 import './LayerManager.css';
 
 const areLayersEquivalent = (a: ReturnType<typeof useMissionStore.getState>['layers'], b: ReturnType<typeof useMissionStore.getState>['layers']) => {
@@ -24,7 +41,12 @@ const areLayersEquivalent = (a: ReturnType<typeof useMissionStore.getState>['lay
       layerA.opacity === layerB.opacity &&
       layerA.url === layerB.url &&
       layerA.cesiumAssetId === layerB.cesiumAssetId &&
-      layerA.cesiumAssetType === layerB.cesiumAssetType
+      layerA.cesiumAssetType === layerB.cesiumAssetType &&
+      // localBounds is fixed when the layer is created, so it cannot diverge
+      // while the id and the handle key still match.
+      layerA.localKind === layerB.localKind &&
+      layerA.localFileName === layerB.localFileName &&
+      layerA.localHandleKey === layerB.localHandleKey
     );
   });
 };
@@ -50,6 +72,13 @@ export const LayerManager = () => {
   const [isCheckingToken, setIsCheckingToken] = React.useState(false);
   const [isTokenEditing, setIsTokenEditing] = React.useState(true);
   const [tokenStatus, setTokenStatus] = React.useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+
+  // The registry holds the live CogSource objects. It is not part of zustand,
+  // so subscribe to it explicitly: restoring a file after a reload changes
+  // nothing in `layers` but must still re-render this panel.
+  React.useSyncExternalStore(subscribeLocalRegistry, getLocalRegistryVersion);
+  const [localStatus, setLocalStatus] = React.useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [isLoadingLocal, setIsLoadingLocal] = React.useState(false);
 
   React.useEffect(() => {
     setTokenInput(cesiumToken || '');
@@ -198,6 +227,140 @@ export const LayerManager = () => {
     }
   };
 
+  /**
+   * Frame a dataset. Padding the extent matters: flying to the bare rectangle
+   * lands far too close on a small site, which makes Cesium demand max-detail
+   * tiles across the whole view.
+   */
+  const flyToBounds = (bounds: { west: number; south: number; east: number; north: number }) => {
+    const maxDiff = Math.max(bounds.east - bounds.west, bounds.north - bounds.south) * 1.25;
+    setCameraTarget({
+      longitude: (bounds.west + bounds.east) / 2,
+      latitude: (bounds.south + bounds.north) / 2,
+      altitude: Math.max(maxDiff * 100000, 500),
+      heading: 0,
+      pitch: -90,
+      roll: 0,
+    });
+  };
+
+  const localLayers = layers.filter((layer) => layer.type === 'local-tiff');
+  const localTerrainLayer = localLayers.find((layer) => layer.localKind === 'TERRAIN');
+
+  const handleAddLocalFile = async (kind: LocalLayerKind) => {
+    const picked = await pickTiffFile();
+    if (!picked) return;
+
+    setIsLoadingLocal(true);
+    setLocalStatus({ type: 'info', message: `Opening ${picked.file.name}…` });
+
+    try {
+      const entry = await buildLocalLayer(picked.file, kind, (message) =>
+        setLocalStatus({ type: 'info', message })
+      );
+
+      // Only one DSM can drive the terrain at a time. The map effect unloads
+      // the old one once it sees the row disappear.
+      if (kind === 'TERRAIN' && localTerrainLayer) {
+        if (localTerrainLayer.localHandleKey) await deleteHandle(localTerrainLayer.localHandleKey);
+        deleteLayer(localTerrainLayer.id);
+      }
+
+      const handleKey = picked.handle ? makeHandleKey() : undefined;
+      if (handleKey) await putHandle(handleKey, picked.handle, picked.file.name);
+
+      const id = addLayer({
+        name: picked.file.name,
+        type: 'local-tiff',
+        visible: true,
+        opacity: 1.0,
+        localKind: kind,
+        localFileName: picked.file.name,
+        localHandleKey: handleKey,
+        localBounds: entry.extent,
+      });
+
+      setLocalEntry(id, entry);
+      flyToBounds(entry.extent);
+      setLocalStatus({
+        type: 'success',
+        message: handleKey || !isFsaSupported()
+          ? entry.summary
+          : `${entry.summary}\nThis browser cannot remember the file — it must be picked again after a reload.`,
+      });
+    } catch (error) {
+      console.error('Failed to load local GeoTIFF:', error);
+      setLocalStatus({ type: 'error', message: (error as Error).message });
+    } finally {
+      setIsLoadingLocal(false);
+    }
+  };
+
+  /**
+   * Re-open a layer's file after a reload. Runs from a click because Chrome
+   * needs a user gesture to re-grant read access to a stored handle.
+   */
+  const handleRestoreLocal = async (layer: Layer) => {
+    setIsLoadingLocal(true);
+    setLocalStatus({ type: 'info', message: `Restoring ${layer.localFileName ?? layer.name}…` });
+
+    try {
+      let file: File | null = null;
+
+      const stored = layer.localHandleKey ? await getHandle(layer.localHandleKey) : null;
+      if (stored && (await ensurePermission(stored.handle))) {
+        file = await stored.handle.getFile();
+      }
+
+      // No handle, permission refused, or the file moved: ask for it again.
+      if (!file) {
+        const picked = await pickTiffFile();
+        if (!picked) {
+          setLocalStatus({ type: 'info', message: 'Restore cancelled' });
+          return;
+        }
+        file = picked.file;
+        if (picked.handle && layer.localHandleKey) {
+          await putHandle(layer.localHandleKey, picked.handle, picked.file.name);
+        }
+      }
+
+      const entry = await buildLocalLayer(file, layer.localKind ?? 'IMAGERY', (message) =>
+        setLocalStatus({ type: 'info', message })
+      );
+      setLocalEntry(layer.id, entry);
+      setLocalStatus({ type: 'success', message: entry.summary });
+    } catch (error) {
+      console.error('Failed to restore local GeoTIFF:', error);
+      setLocalStatus({ type: 'error', message: (error as Error).message });
+    } finally {
+      setIsLoadingLocal(false);
+    }
+  };
+
+  /**
+   * Removing the row is enough to unload the file: the map effect notices the
+   * layer is gone, detaches it from the viewer and only then frees the raster.
+   * Disposing here instead would pull the provider out from under Cesium.
+   */
+  const handleRemoveLayer = (layer: Layer) => {
+    if (layer.type === 'local-tiff' && layer.localHandleKey) {
+      void deleteHandle(layer.localHandleKey);
+    }
+    deleteLayer(layer.id);
+  };
+
+  const handleRemoveAllLocal = () => {
+    localLayers.forEach(handleRemoveLayer);
+    setLocalStatus({ type: 'info', message: 'Local files unloaded' });
+  };
+
+  const handleZoomToLocalData = () => {
+    const target = localLayers.find((layer) => layer.visible && layer.localBounds)
+      ?? localLayers.find((layer) => layer.localBounds);
+    if (target?.localBounds) flyToBounds(target.localBounds);
+  };
+
   return (
     <div className="layer-manager">
       <div className="view-mode-switch" role="group" aria-label="Map view mode">
@@ -238,12 +401,19 @@ export const LayerManager = () => {
                     {layer.cesiumAssetType}
                   </span>
                 )}
+                {layer.type === 'local-tiff' && (
+                  <span
+                    className={`layer-type-badge local ${layer.localKind === 'TERRAIN' ? 'terrain' : 'imagery'}`}
+                  >
+                    LOCAL · {layer.localKind ?? 'IMAGERY'}
+                  </span>
+                )}
               </label>
 
               {layer.id !== 'basemap' && layer.id !== 'terrain' && (
                 <button
                   className="layer-remove-btn"
-                  onClick={() => deleteLayer(layer.id)}
+                  onClick={() => handleRemoveLayer(layer)}
                   title="Remove layer"
                   aria-label={`Remove ${layer.name}`}
                 >
@@ -252,7 +422,24 @@ export const LayerManager = () => {
               )}
             </div>
 
-            {layer.visible && (
+            {/* A local layer whose file is not open yet — the handle survived
+                the reload but the raster did not. */}
+            {layer.type === 'local-tiff' && !hasLocalEntry(layer.id) && (
+              <div className="layer-controls layer-restore">
+                <span className="layer-restore-hint">File not loaded</span>
+                <button
+                  className="btn-action"
+                  onClick={() => handleRestoreLocal(layer)}
+                  disabled={isLoadingLocal}
+                  title={`Re-open ${layer.localFileName ?? layer.name}`}
+                >
+                  Restore
+                </button>
+              </div>
+            )}
+
+            {layer.visible && !(layer.type === 'local-tiff' && !hasLocalEntry(layer.id)) &&
+             !(layer.type === 'local-tiff' && layer.localKind === 'TERRAIN') && (
               <div className="layer-controls">
                 <label>
                   Opacity:
@@ -299,6 +486,59 @@ export const LayerManager = () => {
           </button>
         </div>
       )}
+
+      {/* Deliberately not gated on cesiumToken: loading site data from disk is
+          exactly what is needed when there is no Ion account and no internet. */}
+      <details className="map-setup local-files" open={localLayers.length > 0}>
+        <summary>
+          <span>Local files (offline)</span>
+          <span className={`setup-state ${localLayers.length > 0 ? 'is-ok' : ''}`}>
+            {localLayers.length > 0 ? `${localLayers.length} loaded` : 'GeoTIFF from disk'}
+          </span>
+        </summary>
+
+        <div className="token-section">
+          <p className="token-hint">
+            Load a site orthophoto and DSM straight from this computer. Nothing is uploaded and no
+            token is needed. Cloud Optimized GeoTIFFs load fastest.
+          </p>
+          <div className="local-file-actions">
+            <button
+              className="btn-action"
+              onClick={() => handleAddLocalFile('IMAGERY')}
+              disabled={isLoadingLocal}
+              title="Add a local orthophoto as an imagery layer"
+            >
+              + Orthophoto
+            </button>
+            <button
+              className="btn-action"
+              onClick={() => handleAddLocalFile('TERRAIN')}
+              disabled={isLoadingLocal}
+              title="Use a local DSM as the terrain"
+            >
+              {localTerrainLayer ? 'Replace DSM' : '+ DSM terrain'}
+            </button>
+            <button
+              className="btn-action"
+              onClick={handleZoomToLocalData}
+              disabled={isLoadingLocal || localLayers.length === 0}
+              title="Fly the camera to the local data"
+            >
+              Zoom to data
+            </button>
+            <button
+              className="btn-action btn-danger"
+              onClick={handleRemoveAllLocal}
+              disabled={isLoadingLocal || localLayers.length === 0}
+              title="Unload every local file and free the memory it holds"
+            >
+              Remove all
+            </button>
+          </div>
+          {localStatus && <div className={`token-status ${localStatus.type}`}>{localStatus.message}</div>}
+        </div>
+      </details>
 
       <details className="map-setup" open={!cesiumToken}>
         <summary>

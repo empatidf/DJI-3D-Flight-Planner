@@ -3,7 +3,7 @@
  * Main 3D/2D visualization component using CesiumJS
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Viewer,
   Ion,
@@ -35,6 +35,15 @@ import {
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore, waypointKey } from '../stores/mission-store';
 import { sampleTerrainForWaypoints, sampleTerrainWithSubPoints, analyzeCollisionRisk } from '../lib/terrain-sampler';
+import {
+  disposeLocalLayer,
+  getLocalEntry,
+  getLocalLayerIds,
+  getLocalRegistryVersion,
+  subscribeLocalRegistry,
+} from '../lib/local-tiff/registry';
+import type { Layer } from '../stores/mission-store';
+import type { ImageryProvider, TerrainProvider } from 'cesium';
 import { WaypointActionDialog, WaypointQuickEdit } from './WaypointEditors';
 import type { WaypointAction } from '../lib/wpml-actions';
 
@@ -97,6 +106,12 @@ export const CesiumMap = () => {
   const customTilesetsRef = useRef<Record<string, Cesium3DTileset>>({});
   const customLayerLoadRunIdRef = useRef<number>(0);
   const terrainApplyRunIdRef = useRef<number>(0);
+  const localImageryLayersRef = useRef<Record<string, ImageryLayer>>({});
+  const localTerrainLayerIdRef = useRef<string | null>(null);
+  const localAppliedViewerVersionRef = useRef<number>(-1);
+  // Opening a local file does not touch `layers`, so the layer effect would
+  // never see it. The registry publishes its own version instead.
+  const localRegistryVersion = useSyncExternalStore(subscribeLocalRegistry, getLocalRegistryVersion);
   const viewMode = useMissionStore((state) => state.viewMode);
   const cameraTarget = useMissionStore((state) => state.cameraTarget);
   const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
@@ -574,6 +589,19 @@ export const CesiumMap = () => {
    * Both loaders call this once they are done, so the order no longer depends on
    * which network request wins.
    */
+  /**
+   * A visible local DSM whose file is actually open owns the terrain provider.
+   * It is the most detailed, site-specific elevation available, so it wins over
+   * both Cesium World Terrain and any Ion TERRAIN asset.
+   */
+  const hasLiveLocalTerrain = (candidates: Layer[]) =>
+    candidates.some((layer) =>
+      layer.visible &&
+      layer.type === 'local-tiff' &&
+      layer.localKind === 'TERRAIN' &&
+      !!getLocalEntry(layer.id)?.terrainProvider
+    );
+
   const enforceImageryOrder = (viewer: Viewer) => {
     const collection = viewer.imageryLayers;
     const worldImagery = worldImageryLayerRef.current;
@@ -777,6 +805,11 @@ export const CesiumMap = () => {
       return;
     }
 
+    if (hasLiveLocalTerrain(layers)) {
+      console.log('[Terrain] Local DSM is visible — leaving terrainProvider to the local layer loader');
+      return;
+    }
+
     const runId = ++terrainApplyRunIdRef.current;
 
     if (terrainLayer?.visible) {
@@ -798,7 +831,7 @@ export const CesiumMap = () => {
       console.log('Switching to flat terrain');
       viewer.terrainProvider = new EllipsoidTerrainProvider();
     }
-  }, [layers, viewerInitVersion, firstLoadLayerRefreshTick]);
+  }, [layers, viewerInitVersion, firstLoadLayerRefreshTick, localRegistryVersion]);
 
   // One-time re-apply pass after first viewer initialization (equivalent to uncheck/check once)
   useEffect(() => {
@@ -2190,12 +2223,18 @@ export const CesiumMap = () => {
       }
     });
     
-    // Remove existing custom imagery layers
+    // Remove existing custom imagery layers.
+    // Only the `custom-` ones: local GeoTIFF layers are also tagged with
+    // _customLayerId (so enforceImageryOrder keeps them on top) but they are
+    // owned by the local loader below. Tearing them down here removed the
+    // orthophoto from the globe on every unrelated layer change, while the
+    // local loader still held the reference and so never re-added it.
     const layersToRemove: ImageryLayer[] = [];
     for (let i = 0; i < viewer.imageryLayers.length; i++) {
       const imageryLayer = viewer.imageryLayers.get(i);
       // @ts-ignore - accessing custom property
-      if (imageryLayer._customLayerId) {
+      const customId: string | undefined = imageryLayer._customLayerId;
+      if (customId && customId.startsWith('custom-')) {
         layersToRemove.push(imageryLayer);
       }
     }
@@ -2227,6 +2266,11 @@ export const CesiumMap = () => {
 
         try {
           if (layer.cesiumAssetType === 'TERRAIN') {
+            // Local DSM wins: it is site-specific and finer than any Ion terrain.
+            if (hasLiveLocalTerrain(layers)) {
+              console.log(`[LayerLoad] Skipping Ion TERRAIN ${layer.name}: a local DSM owns the terrain`);
+              continue;
+            }
             const terrainProvider = await CesiumTerrainProvider.fromIonAssetId(assetId, ionLoadOptions);
             if (customLayerLoadRunIdRef.current !== runId) return;
             if (!viewerRef.current || viewerRef.current !== viewer) return;
@@ -2293,6 +2337,118 @@ export const CesiumMap = () => {
       customLayerLoadRunIdRef.current++;
     };
   }, [layers, cesiumToken, viewerInitVersion, firstLoadLayerRefreshTick]);
+
+  /**
+   * Render local GeoTIFF layers — an offline orthophoto as imagery, a local DSM
+   * as the terrain. Deliberately independent of the Cesium Ion loader above:
+   * it needs no token, and unlike that loader it diffs instead of tearing every
+   * layer down. Rebuilding here would re-open and re-decode the TIFF on every
+   * opacity slider tick.
+   */
+  useEffect(() => {
+    if (!viewerRef.current) return;
+
+    const viewer = viewerRef.current;
+
+    // The previous viewer was destroyed (StrictMode remount): its ImageryLayer
+    // objects are gone, so drop the bookkeeping rather than removing them.
+    if (localAppliedViewerVersionRef.current !== viewerInitVersion) {
+      localImageryLayersRef.current = {};
+      localTerrainLayerIdRef.current = null;
+      localAppliedViewerVersionRef.current = viewerInitVersion;
+    }
+
+    const localLayers = layers.filter((layer) => layer.type === 'local-tiff');
+    // Visible AND actually open — after a reload the row exists but the file
+    // has to be restored by the user before there is anything to draw.
+    const liveById = new Map<string, Layer>();
+    localLayers.forEach((layer) => {
+      if (layer.visible && getLocalEntry(layer.id)) liveById.set(layer.id, layer);
+    });
+
+    // Drop imagery that was hidden, deleted or unloaded.
+    Object.entries(localImageryLayersRef.current).forEach(([layerId, imageryLayer]) => {
+      const layer = liveById.get(layerId);
+      if (!layer || layer.localKind !== 'IMAGERY') {
+        viewer.imageryLayers.remove(imageryLayer, true);
+        delete localImageryLayersRef.current[layerId];
+      }
+    });
+
+    let addedImagery = false;
+    liveById.forEach((layer, layerId) => {
+      if (layer.localKind !== 'IMAGERY') return;
+      const alpha = Number.isFinite(layer.opacity) ? layer.opacity : 1;
+
+      const existing = localImageryLayersRef.current[layerId];
+      // Trust the collection, not the bookkeeping: if something else dropped
+      // the layer, fall through and add it again instead of silently skipping.
+      if (existing && viewer.imageryLayers.contains(existing)) {
+        existing.alpha = alpha; // opacity in place — no reload
+        return;
+      }
+      if (existing) delete localImageryLayersRef.current[layerId];
+
+      const provider = getLocalEntry(layerId)?.imageryProvider;
+      if (!provider) return;
+
+      // Duck-typed provider: Cesium accepts it, its .d.ts asks for the class.
+      const imageryLayer = viewer.imageryLayers.addImageryProvider(
+        provider as unknown as ImageryProvider
+      );
+      // @ts-expect-error - marker property read by enforceImageryOrder
+      imageryLayer._customLayerId = `local-${layerId}`;
+      imageryLayer.alpha = alpha;
+      localImageryLayersRef.current[layerId] = imageryLayer;
+      addedImagery = true;
+      console.log(`Added local imagery layer: ${layer.name}`);
+    });
+
+    if (addedImagery) enforceImageryOrder(viewer);
+
+    // Terrain. The world-terrain effect runs earlier in this same commit and
+    // already stepped aside for us, so only the apply side is needed here:
+    // when the DSM goes away that effect restores world or flat terrain.
+    const dsmLayer = localLayers.find(
+      (layer) => liveById.has(layer.id) &&
+        layer.localKind === 'TERRAIN' &&
+        getLocalEntry(layer.id)?.terrainProvider
+    );
+
+    if (dsmLayer) {
+      const provider = getLocalEntry(dsmLayer.id)!.terrainProvider! as unknown as TerrainProvider;
+      if (viewer.terrainProvider !== provider) {
+        // Invalidate any in-flight world-terrain load so it cannot overwrite this.
+        terrainApplyRunIdRef.current++;
+        viewer.terrainProvider = provider;
+        localTerrainLayerIdRef.current = dsmLayer.id;
+        console.log(`Applied local DSM terrain: ${dsmLayer.name}`);
+      }
+    } else {
+      localTerrainLayerIdRef.current = null;
+    }
+
+    // Free the rasters of layers the user removed. This runs last, once the
+    // imagery is off the collection and the terrain effect above has already
+    // pointed the viewer somewhere else — disposing while Cesium still holds a
+    // provider would strand it mid-request.
+    const knownIds = new Set(localLayers.map((layer) => layer.id));
+    getLocalLayerIds()
+      .filter((id) => !knownIds.has(id))
+      .forEach((id) => {
+        const stale = getLocalEntry(id);
+        if (stale?.terrainProvider &&
+            viewer.terrainProvider === (stale.terrainProvider as unknown as TerrainProvider)) {
+          // Do not bump terrainApplyRunIdRef: a world-terrain load may already
+          // be in flight for this same change and should still win.
+          viewer.terrainProvider = new EllipsoidTerrainProvider();
+        }
+        console.log(`Unloaded local layer ${id}`);
+        disposeLocalLayer(id);
+      });
+
+    viewer.scene.requestRender();
+  }, [layers, viewerInitVersion, firstLoadLayerRefreshTick, localRegistryVersion]);
 
   // Collision analysis: run on request, draw risky stretches in red, clear on request === null
   useEffect(() => {

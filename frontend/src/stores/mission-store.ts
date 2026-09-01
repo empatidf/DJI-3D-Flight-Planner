@@ -101,13 +101,22 @@ export interface Mission {
 export interface Layer {
   id: string;
   name: string;
-  type: 'basemap' | 'terrain' | 'mission' | 'kml' | 'overlay' | 'cesium-ion';
+  type: 'basemap' | 'terrain' | 'mission' | 'kml' | 'overlay' | 'cesium-ion' | 'local-tiff';
   visible: boolean;
   opacity: number;
   data?: any;
   url?: string; // URL for external imagery/data sources
   cesiumAssetId?: number; // Cesium Ion asset ID
   cesiumAssetType?: 'IMAGERY' | 'TERRAIN' | '3DTILES'; // Cesium Ion asset type
+
+  // Local GeoTIFF layers (type === 'local-tiff'). Descriptors only — the open
+  // File, the CogSource and the decoded raster live in lib/local-tiff/registry,
+  // because this array is JSON-serialised into localStorage.
+  localKind?: 'IMAGERY' | 'TERRAIN';
+  localFileName?: string;
+  /** key of the File System Access handle kept in IndexedDB, if any */
+  localHandleKey?: string;
+  localBounds?: { west: number; south: number; east: number; north: number };
 }
 
 /**
@@ -191,7 +200,8 @@ interface MissionStore {
   moveWaypointAction: (missionId: string, pointIndex: number, actionId: string, direction: -1 | 1) => void;
 
   // Layer actions
-  addLayer: (layer: Omit<Layer, 'id'>) => void;
+  /** returns the generated layer id, so callers can key side data to it */
+  addLayer: (layer: Omit<Layer, 'id'>) => string;
   setLayers: (layers: Layer[]) => void;
   updateLayer: (id: string, updates: Partial<Layer>) => void;
   deleteLayer: (id: string) => void;
@@ -255,7 +265,12 @@ const areLayersEquivalent = (a: Layer[], b: Layer[]) => {
       layerA.opacity === layerB.opacity &&
       layerA.url === layerB.url &&
       layerA.cesiumAssetId === layerB.cesiumAssetId &&
-      layerA.cesiumAssetType === layerB.cesiumAssetType
+      layerA.cesiumAssetType === layerB.cesiumAssetType &&
+      // localBounds is fixed when the layer is created, so it cannot diverge
+      // while the id and the handle key still match.
+      layerA.localKind === layerB.localKind &&
+      layerA.localFileName === layerB.localFileName &&
+      layerA.localHandleKey === layerB.localHandleKey
     );
   });
 };
@@ -496,6 +511,7 @@ export const useMissionStore = create<MissionStore>()(
         set((state) => ({
           layers: [...state.layers, newLayer],
         }));
+        return id;
       },
 
       setLayers: (layers) => {
