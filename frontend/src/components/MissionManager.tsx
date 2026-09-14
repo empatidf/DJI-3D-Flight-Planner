@@ -2,8 +2,10 @@ import { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useMissionStore } from '../stores/mission-store';
 import type { Mission } from '../stores/mission-store';
-import { DRONES } from '../lib/drone-specs';
 import { estimateMissionFlight } from '../lib/flight-calculations';
+import { useFolderStatus } from '../lib/project-folder/folder-status';
+import { ProjectFolderBar } from './ProjectFolderBar';
+import { NewMissionWizard } from './NewMissionWizard';
 import './MissionManager.css';
 
 const EXPORT_APP = 'dji-3d-flight-planner';
@@ -40,6 +42,7 @@ function triggerMissionDownload(mission: Mission) {
       parameters: mission.parameters,
       flightLines: mission.flightLines,
       layerSnapshot: mission.layerSnapshot,
+      barcode: mission.barcode,
       visible: mission.visible,
     },
   };
@@ -61,7 +64,7 @@ function isValidExportFile(data: unknown): data is MissionExportFile {
   const m = d.mission as Record<string, unknown>;
   return (
     typeof m.name === 'string' &&
-    (m.missionType === 'area' || m.missionType === 'waypoint') &&
+    (m.missionType === 'area' || m.missionType === 'waypoint' || m.missionType === 'barcode') &&
     typeof m.parameters === 'object' &&
     m.parameters !== null &&
     Array.isArray(m.flightLines)
@@ -77,7 +80,6 @@ interface ContextMenuPos {
 
 export const MissionManager = () => {
   const missions = useMissionStore((state) => state.missions);
-  const layers = useMissionStore((state) => state.layers);
   const activeMissionId = useMissionStore((state) => state.activeMissionId);
   const addMission = useMissionStore((state) => state.addMission);
   const deleteMission = useMissionStore((state) => state.deleteMission);
@@ -89,11 +91,10 @@ export const MissionManager = () => {
   const setMissionsVisibility = useMissionStore((state) => state.setMissionsVisibility);
   const toggleMissionFlown = useMissionStore((state) => state.toggleMissionFlown);
   const setMissionArchived = useMissionStore((state) => state.setMissionArchived);
-  const missionDefaults = useMissionStore((state) => state.missionDefaults);
+  const isLoadingMissions = useFolderStatus((state) => state.state === 'loading');
 
   const [tab, setTab] = useState<'active' | 'archived'>('active');
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [newMissionName, setNewMissionName] = useState('');
+  const [showWizard, setShowWizard] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -101,66 +102,9 @@ export const MissionManager = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const getMissionTag = (mission: typeof missions[number]) => {
-    if (mission.missionType === 'waypoint') return 'Waypoint';
-    if (mission.aoi) return 'Area';
-    return null;
-  };
-
-  const handleCreateMission = () => {
-    if (!newMissionName.trim()) {
-      alert('Please enter a mission name');
-      return;
-    }
-
-    // Pick up where the last mission left off: same aircraft, payload, height and
-    // speed. Terrain follow is deliberately not carried over — it is expensive and
-    // area-specific, so every new mission starts with it off.
-    const defaultDrone = DRONES.find((drone) => drone.id === missionDefaults.droneId) ?? DRONES[0];
-    const defaultCamera =
-      defaultDrone.cameras.find((camera) => camera.id === missionDefaults.cameraId) ??
-      defaultDrone.cameras[0];
-
-    const missionId = addMission({
-      name: newMissionName,
-      missionType: 'area',
-      drone: defaultDrone,
-      camera: defaultCamera,
-      aoi: null,
-      takeoffPoint: null,
-      parameters: {
-        altitude: missionDefaults.altitude ?? 100,
-        speed: Math.min(missionDefaults.speed ?? 8, defaultDrone.cruiseSpeed),
-        forwardOverlap: 80,
-        sideOverlap: 70,
-        flightAngle: 0,
-        gimbalPitch: -90,
-        gimbalYaw: 0,
-        droneYaw: 0,
-        waypointTakePhoto: false,
-        waypointRecordVideo: false,
-        waypointHoverEnabled: false,
-        waypointHoverTime: 2,
-        waypointAutoDroneHeading: false,
-        globalHeadingMode: 'manually',
-        gimbalPitchMode: 'manual',
-        waypointAutoGimbalYaw: false,
-        waypointTurnDistance: 0.2,
-        alwaysTerrainFollow: false,
-        terrainFollowAccuracy: 2,
-        terrainFollowMinDist: 5,
-        elevationToleranceEnabled: false,
-        elevationTolerance: 1,
-      },
-      flightLines: [],
-      layerSnapshot: layers.map((layer) => ({ ...layer })),
-      visible: true,
-    });
-
-    setNewMissionName('');
-    setShowCreateForm(false);
-    setActiveMission(missionId);
-  };
+  // The type is chosen when the mission is created, so even an empty mission has one.
+  const getMissionTag = (mission: typeof missions[number]) =>
+    mission.missionType === 'waypoint' ? 'Waypoint' : mission.missionType === 'barcode' ? 'Barcode' : 'Area';
 
   const handleSelectMission = (missionId: string) => {
     const mission = missions.find((item) => item.id === missionId);
@@ -174,7 +118,12 @@ export const MissionManager = () => {
 
     const sourceCoordinates = mission.aoi?.coordinates?.length
       ? mission.aoi.coordinates
-      : (mission.flightLines ?? []).flatMap((line) => line.coordinates ?? []);
+      : mission.barcode
+        ? [
+            [mission.barcode.bounds.west, mission.barcode.bounds.south],
+            [mission.barcode.bounds.east, mission.barcode.bounds.north],
+          ]
+        : (mission.flightLines ?? []).flatMap((line) => line.coordinates ?? []);
 
     const validCoordinates = sourceCoordinates.filter(
       (coord): coord is number[] => !!coord && Number.isFinite(coord[0]) && Number.isFinite(coord[1])
@@ -314,6 +263,8 @@ export const MissionManager = () => {
 
   return (
     <div className="mission-manager">
+      <ProjectFolderBar />
+
       <div className="mission-tabs" role="tablist">
         <button
           type="button"
@@ -331,7 +282,6 @@ export const MissionManager = () => {
           className={isArchiveTab ? 'is-active' : ''}
           onClick={() => {
             setTab('archived');
-            setShowCreateForm(false);
           }}
         >
           Archived <span className="tab-count">{archivedMissions.length}</span>
@@ -342,8 +292,8 @@ export const MissionManager = () => {
         <div className="mission-actions">
           <button
             className="btn-action btn-create"
-            onClick={() => setShowCreateForm(!showCreateForm)}
-            title="Create New Mission"
+            onClick={() => setShowWizard(true)}
+            title="Create a new area or waypoint mission"
           >
             ✚ New Mission
           </button>
@@ -368,23 +318,6 @@ export const MissionManager = () => {
         <div className="import-error">
           <span>{importError}</span>
           <button onClick={() => setImportError(null)}>✕</button>
-        </div>
-      )}
-
-      {showCreateForm && (
-        <div className="create-form">
-          <input
-            type="text"
-            placeholder="Mission name..."
-            value={newMissionName}
-            onChange={(e) => setNewMissionName(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleCreateMission()}
-            autoFocus
-          />
-          <div className="form-buttons">
-            <button className="btn-confirm" onClick={handleCreateMission}>Create</button>
-            <button className="btn-cancel" onClick={() => setShowCreateForm(false)}>Cancel</button>
-          </div>
         </div>
       )}
 
@@ -422,7 +355,11 @@ export const MissionManager = () => {
       <div className="mission-list">
         {visibleMissions.length === 0 ? (
           <div className="empty-state">
-            {isArchiveTab ? 'No archived missions.' : 'No missions yet. Create one to start!'}
+            {isLoadingMissions
+              ? 'Loading missions…'
+              : isArchiveTab
+                ? 'No archived missions.'
+                : 'No missions yet. Create one to start!'}
           </div>
         ) : (
           visibleMissions.map((mission) => (
@@ -491,6 +428,8 @@ export const MissionManager = () => {
           <strong>Active:</strong> {missions.find(m => m.id === activeMissionId)?.name}
         </div>
       )}
+
+      {showWizard && <NewMissionWizard onClose={() => setShowWizard(false)} />}
 
       {contextMenu && contextMission && createPortal(
         <>

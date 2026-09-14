@@ -131,6 +131,12 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
  */
 const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
+  const finishAction = parameters.finishAction ?? 'goHome';
+  const takeOffSecurityHeight = formatWpmlFloat(
+    Math.min(1500, Math.max(1.2, parseWpmlFloat(parameters.safeTakeoffAltitude, 20))),
+    20,
+    1
+  );
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
   // globalTransitionalSpeed: speed flying TO first waypoint. DJI valid range [1, 15] m/s.
   const transitionalSpeed = formatWpmlFloat(Math.min(15, Math.max(1, parseWpmlFloat(parameters.speed, 8))), 8, 2);
@@ -151,10 +157,10 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
 <Document>
   <wpml:missionConfig>
     <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
-    <wpml:finishAction>goHome</wpml:finishAction>
+    <wpml:finishAction>${finishAction}</wpml:finishAction>
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
-    <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
+    <wpml:takeOffSecurityHeight>${takeOffSecurityHeight}</wpml:takeOffSecurityHeight>
     <wpml:globalTransitionalSpeed>${transitionalSpeed}</wpml:globalTransitionalSpeed>
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}
@@ -190,6 +196,12 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
  */
 const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
+  const finishAction = parameters.finishAction ?? 'goHome';
+  const takeOffSecurityHeight = formatWpmlFloat(
+    Math.min(1500, Math.max(1.2, parseWpmlFloat(parameters.safeTakeoffAltitude, 20))),
+    20,
+    1
+  );
   const speedValue = formatWpmlFloat(parameters.speed, 8, 2);
   // globalTransitionalSpeed: speed flying TO first waypoint. DJI valid range [1, 15] m/s.
   const transitionalSpeed = formatWpmlFloat(Math.min(15, Math.max(1, parseWpmlFloat(parameters.speed, 8))), 8, 2);
@@ -224,10 +236,10 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
   <wpml:updateTime>${timestamp}</wpml:updateTime>
   <wpml:missionConfig>
     <wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>
-    <wpml:finishAction>goHome</wpml:finishAction>
+    <wpml:finishAction>${finishAction}</wpml:finishAction>
     <wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>
     <wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>
-    <wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>
+    <wpml:takeOffSecurityHeight>${takeOffSecurityHeight}</wpml:takeOffSecurityHeight>
     <wpml:globalTransitionalSpeed>${transitionalSpeed}</wpml:globalTransitionalSpeed>
     <wpml:droneInfo>
       <wpml:droneEnumValue>${droneInfo.droneEnumValue}</wpml:droneEnumValue>${droneSubEnumTag}

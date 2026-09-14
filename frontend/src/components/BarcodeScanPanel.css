@@ -1,0 +1,139 @@
+.mission-type-chip.is-barcode {
+  background: #059669;
+}
+
+.barcode-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ecfdf5 0%, #f0f9ff 100%);
+}
+
+.barcode-counter-value {
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1;
+  color: #065f46;
+  font-variant-numeric: tabular-nums;
+}
+
+.barcode-counter-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #047857;
+}
+
+.barcode-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 15px;
+}
+
+.barcode-actions .btn-secondary {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.barcode-aircraft {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  background: #f8f9fa;
+  font-size: 12px;
+  color: #343a40;
+}
+
+.barcode-aircraft small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #6c757d;
+}
+
+.panel-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-bottom: 4px;
+  border-radius: 6px;
+}
+
+.panel-preview-caption {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: #6c757d;
+}
+
+.barcode-structure-stats {
+  margin-top: -8px;
+}
+
+.barcode-variants {
+  margin: -6px 0 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #856404;
+}
+
+.panel-style-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 4px 0 6px;
+}
+
+.planner-section .panel-style-row label.inline-toggle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.planner-section .panel-style-row input[type='checkbox'] {
+  width: auto;
+  margin: 0;
+}
+
+.planner-section input.panel-color-input {
+  width: 56px;
+  height: 30px;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.planner-section input.panel-color-input:disabled,
+.planner-section input.panel-range:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.planner-section input.panel-range {
+  padding: 0;
+}
+
+.panel-style-divider {
+  height: 1px;
+  margin: 8px 0;
+  background: #e9ecef;
+}
+
+.btn-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #0d6efd;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-link:hover {
+  text-decoration: underline;
+}

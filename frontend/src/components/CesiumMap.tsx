@@ -43,11 +43,30 @@ import {
   subscribeLocalRegistry,
 } from '../lib/local-tiff/registry';
 import type { Layer } from '../stores/mission-store';
+import {
+  DEFAULT_PANEL_STYLE,
+  decodePanelCorners,
+  type BarcodeScanData,
+  type PanelStyle,
+} from '../lib/barcode-panels';
+import { BarcodePanelImageryProvider, PanelTileIndex } from '../lib/barcode-panel-imagery-provider';
 import type { ImageryProvider, TerrainProvider } from 'cesium';
 import { WaypointActionDialog, WaypointQuickEdit } from './WaypointEditors';
 import type { WaypointAction } from '../lib/wpml-actions';
 
 Ion.defaultAccessToken = '';
+
+/**
+ * Solar panels of one Barcode Scan mission, drawn as an imagery layer (see
+ * lib/barcode-panel-imagery-provider for why not as geometry). The grid index
+ * survives style changes; only the layer, i.e. its cached tiles, is replaced.
+ */
+interface PanelLayer {
+  corners: string;
+  index: PanelTileIndex;
+  styleKey: string;
+  layer: ImageryLayer;
+}
 
 export const CesiumMap = () => {
   const viewerRef = useRef<Viewer | null>(null);
@@ -109,6 +128,11 @@ export const CesiumMap = () => {
   const localImageryLayersRef = useRef<Record<string, ImageryLayer>>({});
   const localTerrainLayerIdRef = useRef<string | null>(null);
   const localAppliedViewerVersionRef = useRef<number>(-1);
+  // Barcode Scan panel layers per mission, tied to the viewer that owns them.
+  const panelLayersRef = useRef<{ viewer: Viewer | null; layers: Map<string, PanelLayer> }>({
+    viewer: null,
+    layers: new Map(),
+  });
   // Opening a local file does not touch `layers`, so the layer effect would
   // never see it. The registry publishes its own version instead.
   const localRegistryVersion = useSyncExternalStore(subscribeLocalRegistry, getLocalRegistryVersion);
@@ -628,6 +652,11 @@ export const CesiumMap = () => {
     }
     customLayers.forEach((layer) => collection.raiseToTop(layer));
 
+    // Barcode panel outlines belong above the orthophotos they are drawn over.
+    customLayers
+      .filter((layer) => String((layer as unknown as { _customLayerId?: string })._customLayerId).startsWith('panels-'))
+      .forEach((layer) => collection.raiseToTop(layer));
+
     viewer.scene.requestRender();
   };
 
@@ -752,7 +781,12 @@ export const CesiumMap = () => {
     const sourceCoordinates =
       activeMission.aoi?.coordinates?.length
         ? activeMission.aoi.coordinates
-        : (activeMission.flightLines ?? []).flatMap((line) => line.coordinates ?? []);
+        : activeMission.barcode
+          ? [
+              [activeMission.barcode.bounds.west, activeMission.barcode.bounds.south],
+              [activeMission.barcode.bounds.east, activeMission.barcode.bounds.north],
+            ]
+          : (activeMission.flightLines ?? []).flatMap((line) => line.coordinates ?? []);
 
     const validCoordinates = sourceCoordinates.filter(
       (coord): coord is number[] => !!coord && Number.isFinite(coord[0]) && Number.isFinite(coord[1])
@@ -983,6 +1017,76 @@ export const CesiumMap = () => {
     // Dependencies include missions array - any change triggers immediate re-render.
     // terrainReadyVersion re-samples the AOI border after a terrain provider swap.
   }, [missions, activeMissionIdForKmlEdit, kmlEditMode, terrainReadyVersion]);
+
+  // Barcode Scan: draw each mission's solar panels
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+
+    const registry = panelLayersRef.current;
+    // StrictMode builds a second viewer; the first one's primitives died with it.
+    if (registry.viewer !== viewer) {
+      registry.viewer = viewer;
+      registry.layers.clear();
+    }
+    const { layers } = registry;
+    const imageryLayers = viewer.imageryLayers;
+
+    const drop = (entry: PanelLayer) => {
+      if (imageryLayers.contains(entry.layer)) imageryLayers.remove(entry.layer, true);
+    };
+
+    const addPanelLayer = (missionId: string, index: PanelTileIndex, style: PanelStyle) => {
+      const layer = imageryLayers.addImageryProvider(
+        new BarcodePanelImageryProvider(index, style) as unknown as ImageryProvider
+      );
+      // @ts-expect-error - marker property read by enforceImageryOrder
+      layer._customLayerId = `panels-${missionId}`;
+      return layer;
+    };
+
+    const barcodeMissions = new Map<string, { data: BarcodeScanData; visible: boolean }>();
+    missions.forEach((mission) => {
+      if (mission.missionType === 'barcode' && mission.barcode && mission.barcode.panelCount > 0) {
+        barcodeMissions.set(mission.id, { data: mission.barcode, visible: mission.visible });
+      }
+    });
+
+    // Deleted missions and replaced layouts lose their layer. Hidden missions
+    // keep it, so showing them again is instant.
+    layers.forEach((entry, missionId) => {
+      const mission = barcodeMissions.get(missionId);
+      if (!mission || mission.data.corners !== entry.corners) {
+        drop(entry);
+        layers.delete(missionId);
+      }
+    });
+
+    let changed = false;
+    barcodeMissions.forEach(({ data, visible }, missionId) => {
+      const style: PanelStyle = { ...DEFAULT_PANEL_STYLE, ...data.style };
+      const styleKey = JSON.stringify(style);
+      let entry = layers.get(missionId);
+
+      if (!entry) {
+        const index = new PanelTileIndex(decodePanelCorners(data.corners), data.bounds, data.panelSize);
+        entry = { corners: data.corners, index, styleKey, layer: addPanelLayer(missionId, index, style) };
+        layers.set(missionId, entry);
+        changed = true;
+      } else if (entry.styleKey !== styleKey) {
+        // Tiles are cached per layer, so a new style needs a fresh layer.
+        drop(entry);
+        entry.styleKey = styleKey;
+        entry.layer = addPanelLayer(missionId, entry.index, style);
+        changed = true;
+      }
+
+      entry.layer.show = visible && (style.outlineEnabled || style.fillEnabled);
+    });
+
+    if (changed) enforceImageryOrder(viewer);
+    viewer.scene.requestRender();
+  }, [missions, viewerInitVersion]);
 
   // AOI point drag editing for active mission
   useEffect(() => {
@@ -2154,9 +2258,8 @@ export const CesiumMap = () => {
         terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, points, missionAltitude);
       }
 
+      // The mission type is fixed at creation; drawing only replaces the route.
       updateMission(activeMissionId, {
-        missionType: 'waypoint',
-        aoi: null,
         flightLines: [
           {
             id: `waypoint-draw-${Date.now()}`,

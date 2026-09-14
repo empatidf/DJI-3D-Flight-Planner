@@ -7,6 +7,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { CameraSpec, DroneSpec } from '../lib/drone-specs';
 import type { WaypointAction } from '../lib/wpml-actions';
+import type { BarcodeScanData } from '../lib/barcode-panels';
 
 export interface FlightParameters {
   altitude: number; // meters AGL
@@ -37,7 +38,13 @@ export interface FlightParameters {
   terrainFollowSkipPoints?: number; // leading waypoints (transit leg) left untouched by terrain follow
   elevationToleranceEnabled: boolean; // area-only: when true, skip redundant points on flat terrain
   elevationTolerance: number; // meters — keep a point only if terrain elevation differs this much from the last kept point
+  /** Height climbed to after takeoff before heading to the first waypoint (wpml:takeOffSecurityHeight). */
+  safeTakeoffAltitude?: number; // meters, DJI range 1.2–1500
+  /** What the aircraft does after the last waypoint (wpml:finishAction). */
+  finishAction?: FinishAction;
 }
+
+export type FinishAction = 'goHome' | 'noAction' | 'autoLand' | 'gotoFirstWaypoint';
 
 export interface AreaOfInterest {
   type: 'polygon' | 'kml';
@@ -81,7 +88,7 @@ export const waypointKey = (lon: number, lat: number): string =>
 export interface Mission {
   id: string;
   name: string;
-  missionType: 'area' | 'waypoint';
+  missionType: 'area' | 'waypoint' | 'barcode';
   drone: DroneSpec;
   camera: CameraSpec;
   aoi: AreaOfInterest | null;
@@ -94,6 +101,8 @@ export interface Mission {
   flown?: boolean;
   /** Moved to the Archived tab: read-only and hidden on the map by default. */
   archived?: boolean;
+  /** Barcode Scan missions only: the solar park's panel layout and how it is drawn. */
+  barcode?: BarcodeScanData;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -176,7 +185,13 @@ interface MissionStore {
   lastMapView: MapViewState | null;
   cesiumToken: string;
   missionDefaults: MissionDefaults;
-  
+  /**
+   * Missions used to be persisted here, in localStorage. They now live in the
+   * project folder with an IndexedDB copy (lib/project-folder). Until that copy
+   * is verified this stays false and localStorage keeps holding the missions.
+   */
+  missionsMigrated: boolean;
+
   // Mission actions
   addMission: (mission: Omit<Mission, 'id' | 'createdAt' | 'updatedAt'>) => string;
   updateMission: (id: string, updates: Partial<Mission>) => void;
@@ -187,6 +202,8 @@ interface MissionStore {
   setMissionsVisibility: (ids: string[], visible: boolean) => void;
   toggleMissionFlown: (id: string) => void;
   setMissionArchived: (id: string, archived: boolean) => void;
+  setMissionLayerSnapshot: (id: string, layers: Layer[]) => void;
+  markMissionsMigrated: () => void;
 
   // Per-waypoint actions (operate on flightLines[0] of the given mission)
   setSelectedWaypointIndex: (index: number | null) => void;
@@ -229,8 +246,48 @@ interface MissionStore {
 
 type PersistedMissionState = Pick<
   MissionStore,
-  'missions' | 'activeMissionId' | 'layers' | 'viewMode' | 'showAreaHeightGuides' | 'showWaypointHeightGuides' | 'cesiumToken' | 'lastMapView' | 'missionDefaults'
->;
+  'activeMissionId' | 'layers' | 'viewMode' | 'showAreaHeightGuides' | 'showWaypointHeightGuides' | 'cesiumToken' | 'lastMapView' | 'missionDefaults' | 'missionsMigrated'
+> & {
+  /** Only present in storage written before missions moved out (see missionsMigrated). */
+  missions?: Mission[];
+};
+
+export const MISSION_STORE_KEY = '3d-planer-mission-store';
+
+/** Random suffix: two missions created in the same millisecond must not share an id. */
+export const createMissionId = () => `mission-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * Parameters for a brand-new mission. Aircraft height and speed carry over from
+ * the last mission; terrain follow deliberately starts off every time.
+ */
+export const buildNewMissionParameters = (defaults: MissionDefaults, drone: DroneSpec): FlightParameters => ({
+  altitude: defaults.altitude ?? 100,
+  speed: Math.min(defaults.speed ?? 8, drone.cruiseSpeed),
+  forwardOverlap: 80,
+  sideOverlap: 70,
+  flightAngle: 0,
+  gimbalPitch: -90,
+  gimbalYaw: 0,
+  droneYaw: 0,
+  waypointTakePhoto: false,
+  waypointRecordVideo: false,
+  waypointHoverEnabled: false,
+  waypointHoverTime: 2,
+  waypointAutoDroneHeading: false,
+  globalHeadingMode: 'manually',
+  gimbalPitchMode: 'manual',
+  waypointAutoGimbalYaw: false,
+  waypointTurnDistance: 0.2,
+  alwaysTerrainFollow: false,
+  terrainFollowAccuracy: 2,
+  terrainFollowMinDist: 5,
+  terrainFollowSkipPoints: 1,
+  elevationToleranceEnabled: false,
+  elevationTolerance: 1,
+  safeTakeoffAltitude: 20,
+  finishAction: 'goHome',
+});
 
 const defaultLayers: Layer[] = [
   {
@@ -298,10 +355,11 @@ export const useMissionStore = create<MissionStore>()(
       viewMode: 'SCENE3D',
       cesiumToken: '',
       missionDefaults: {},
+      missionsMigrated: false,
 
       // Mission actions
       addMission: (mission) => {
-        const id = `mission-${Date.now()}`;
+        const id = createMissionId();
         const newMission: Mission = {
           ...mission,
           id,
@@ -378,6 +436,20 @@ export const useMissionStore = create<MissionStore>()(
           activeMissionId:
             archived && state.activeMissionId === id ? null : state.activeMissionId,
         }));
+      },
+
+      /**
+       * Remember the map layers with a mission. Not an edit of the route, so
+       * updatedAt stays put — folder sync trusts it to pick the newer copy.
+       */
+      setMissionLayerSnapshot: (id, layers) => {
+        set((state) => ({
+          missions: state.missions.map((m) => (m.id === id ? { ...m, layerSnapshot: layers } : m)),
+        }));
+      },
+
+      markMissionsMigrated: () => {
+        set({ missionsMigrated: true });
       },
 
       // Per-waypoint overrides -------------------------------------------------
@@ -624,10 +696,12 @@ export const useMissionStore = create<MissionStore>()(
       },
     }),
     {
-      name: '3d-planer-mission-store',
+      name: MISSION_STORE_KEY,
       storage: createJSONStorage(() => localStorage),
       partialize: (state): PersistedMissionState => ({
-        missions: state.missions,
+        // Keep writing missions here until folder sync has copied them over.
+        ...(state.missionsMigrated ? {} : { missions: state.missions }),
+        missionsMigrated: state.missionsMigrated,
         activeMissionId: state.activeMissionId,
         layers: state.layers,
         viewMode: state.viewMode,
@@ -646,13 +720,18 @@ export const useMissionStore = create<MissionStore>()(
           updatedAt: new Date(mission.updatedAt),
         }));
 
-        const activeMissionId = hydratedMissions.some((m) => m.id === persisted.activeMissionId)
-          ? persisted.activeMissionId ?? null
-          : null;
+        const missionsMigrated = persisted.missionsMigrated ?? false;
+        // After the move the missions arrive later from IndexedDB, and folder
+        // sync drops an active id that turns out not to exist.
+        const activeMissionId =
+          missionsMigrated || hydratedMissions.some((m) => m.id === persisted.activeMissionId)
+            ? persisted.activeMissionId ?? null
+            : null;
 
         return {
           ...currentState,
           missions: hydratedMissions,
+          missionsMigrated,
           activeMissionId,
           layers: persisted.layers && persisted.layers.length > 0 ? persisted.layers : currentState.layers,
           viewMode: persisted.viewMode ?? currentState.viewMode,

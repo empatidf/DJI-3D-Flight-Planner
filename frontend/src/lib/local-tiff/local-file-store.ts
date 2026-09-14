@@ -95,13 +95,13 @@ export const deleteHandle = async (key: string): Promise<void> => {
 };
 
 /**
- * Make sure we may read the handle. Chrome drops the grant between sessions,
+ * Make sure we may use the handle. Chrome drops the grant between sessions,
  * so requestPermission() has to run inside a user gesture (a button click).
  */
-export const ensurePermission = async (handle: any): Promise<boolean> => {
+export const ensurePermission = async (handle: any, mode: 'read' | 'readwrite' = 'read'): Promise<boolean> => {
   if (!handle?.queryPermission) return true; // nothing to ask on this browser
   try {
-    const opts = { mode: 'read' as const };
+    const opts = { mode };
     if ((await handle.queryPermission(opts)) === 'granted') return true;
     return (await handle.requestPermission(opts)) === 'granted';
   } catch (error) {

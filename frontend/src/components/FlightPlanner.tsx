@@ -5,23 +5,29 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { DRONES, type DroneSpec, type CameraSpec } from '../lib/drone-specs';
-import { calculateFlightPlan } from '../lib/flight-calculations';
+import { calculateFlightPlan, calculateGSD } from '../lib/flight-calculations';
 import { useMissionStore } from '../stores/mission-store';
-import type { FlightParameters } from '../stores/mission-store';
+import type { FinishAction, FlightParameters } from '../stores/mission-store';
 import { importKMLFile, importWaypointKMLFile } from '../lib/kml-parser';
 import { generateFlightLines } from '../lib/flight-path-generator';
 import { getCesiumViewer, sampleTerrainForWaypoints, sampleTerrainWithSubPoints, decimateByElevationTolerance } from '../lib/terrain-sampler';
 import { exportToDJI, downloadKMZ, normalizeYaw } from '../lib/dji-wpml-exporter';
 import { calculateDistance } from '../lib/coordinate-transform';
 import { SelectedWaypointPanel } from './WaypointEditors';
+import { MissionStatsHeader } from './MissionStatsHeader';
+import { BarcodeScanPanel } from './BarcodeScanPanel';
+import { applyAreaPolygon, applyWaypointRoute, describePolygon } from '../lib/mission-import';
 import { APP_VERSION_LABEL } from '../version';
 import './FlightPlanner.css';
+
+/** DJI accepts a safe takeoff altitude between 1.2 and 1500 m. */
+const clampSafeTakeoffAltitude = (value: number) =>
+  Number.isFinite(value) ? Math.min(1500, Math.max(1.2, value)) : 20;
 
 export const FlightPlanner = () => {
   const activeMissionId = useMissionStore((state) => state.activeMissionId);
   const missions = useMissionStore((state) => state.missions);
   const updateMission = useMissionStore((state) => state.updateMission);
-  const setCameraTarget = useMissionStore((state) => state.setCameraTarget);
   const kmlEditMode = useMissionStore((state) => state.kmlEditMode);
   const setKmlEditMode = useMissionStore((state) => state.setKmlEditMode);
   const drawAoiMode = useMissionStore((state) => state.drawAoiMode);
@@ -71,6 +77,10 @@ export const FlightPlanner = () => {
   const [terrainFollowSkipPoints, setTerrainFollowSkipPoints] = useState<number>(1);
   const [elevationToleranceEnabled, setElevationToleranceEnabled] = useState<boolean>(false);
   const [elevationTolerance, setElevationTolerance] = useState<number>(1);
+  const [safeTakeoffAltitude, setSafeTakeoffAltitude] = useState<number>(20);
+  const [finishAction, setFinishAction] = useState<FinishAction>('goHome');
+  // Text being typed into the GSD field; null while it shows the live value.
+  const [gsdDraft, setGsdDraft] = useState<string | null>(null);
   const [isTerrainCalculating, setIsTerrainCalculating] = useState<boolean>(false);
   const [terrainCalcProgress, setTerrainCalcProgress] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -269,10 +279,12 @@ export const FlightPlanner = () => {
       setWaypointTurnDistance(activeMission.parameters.waypointTurnDistance ?? 0.2);
       setAlwaysTerrainFollow(activeMission.parameters.alwaysTerrainFollow ?? false);
       setTerrainFollowAccuracy(activeMission.parameters.terrainFollowAccuracy ?? 2);
-      setTerrainFollowMinDist(activeMission.parameters.terrainFollowMinDist ?? 2);
+      setTerrainFollowMinDist(activeMission.parameters.terrainFollowMinDist ?? 5);
       setTerrainFollowSkipPoints(activeMission.parameters.terrainFollowSkipPoints ?? 1);
       setElevationToleranceEnabled(activeMission.parameters.elevationToleranceEnabled ?? false);
       setElevationTolerance(activeMission.parameters.elevationTolerance ?? 1);
+      setSafeTakeoffAltitude(activeMission.parameters.safeTakeoffAltitude ?? 20);
+      setFinishAction(activeMission.parameters.finishAction ?? 'goHome');
     }
   }, [activeMissionId]);
 
@@ -444,6 +456,8 @@ export const FlightPlanner = () => {
     terrainFollowSkipPoints,
     elevationToleranceEnabled,
     elevationTolerance,
+    safeTakeoffAltitude: clampSafeTakeoffAltitude(safeTakeoffAltitude),
+    finishAction,
   });
 
   const handleUpdateMission = () => {
@@ -488,31 +502,7 @@ export const FlightPlanner = () => {
 
     updateMission(activeMissionId, {
       ...takeoffPointUpdate,
-      parameters: {
-        altitude: newAltitude,
-        speed,
-        forwardOverlap,
-        sideOverlap,
-        flightAngle,
-        gimbalPitch,
-        gimbalYaw,
-        droneYaw,
-        waypointTakePhoto,
-        waypointRecordVideo,
-        waypointHoverEnabled,
-        waypointHoverTime,
-        waypointAutoDroneHeading,
-        globalHeadingMode,
-        gimbalPitchMode,
-        waypointAutoGimbalYaw,
-        waypointTurnDistance,
-        alwaysTerrainFollow,
-        terrainFollowAccuracy,
-        terrainFollowMinDist,
-        terrainFollowSkipPoints,
-        elevationToleranceEnabled,
-        elevationTolerance,
-      },
+      parameters: { ...buildCurrentParameters(), altitude: newAltitude },
     });
 
     if (
@@ -597,155 +587,46 @@ export const FlightPlanner = () => {
     }
   };
 
-  const handleImportKML = async () => {
-    if (!activeMissionId) {
-      setStatusMessage('Please select or create a mission first');
-      setTimeout(() => setStatusMessage(''), 3000);
-      return;
-    }
+  /**
+   * Replace the active mission's geometry from a KML/KMZ file. The file is read
+   * for the mission's own type — first polygon for an area mission, the point
+   * sequence for a waypoint mission. The type itself never changes.
+   */
+  const handleReplaceFromKml = () => {
+    if (!activeMissionId || !activeMission) return;
+    const missionId = activeMissionId;
+    const isWaypointMission = activeMission.missionType === 'waypoint';
 
-    try {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.kml,.kmz';
-      input.onchange = async (e: any) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.kml,.kmz';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
 
-        const result = await importKMLFile(file);
-        const firstPolygon = result[0];
-
-        if (!firstPolygon) {
-          setStatusMessage('No valid polygon found in KML file');
-          setTimeout(() => setStatusMessage(''), 3000);
-          return;
-        }
-
-        updateMission(activeMissionId, {
-          missionType: 'area',
-          aoi: {
-            type: 'kml',
-            coordinates: firstPolygon.coordinates,
-            name: firstPolygon.name,
-          },
-          flightLines: [],
-          takeoffPoint: null, // reset on new import
-        });
-
-        // Calculate center and bounding box for camera positioning
-        const lons = firstPolygon.coordinates.map(coord => coord[0]);
-        const lats = firstPolygon.coordinates.map(coord => coord[1]);
-        const minLon = Math.min(...lons);
-        const maxLon = Math.max(...lons);
-        const minLat = Math.min(...lats);
-        const maxLat = Math.max(...lats);
-        
-        const centerLon = (minLon + maxLon) / 2;
-        const centerLat = (minLat + maxLat) / 2;
-        
-        // Calculate rough distance to determine altitude
-        const lonDiff = maxLon - minLon;
-        const latDiff = maxLat - minLat;
-        const maxDiff = Math.max(lonDiff, latDiff);
-        // Approximate altitude based on area size (in degrees)
-        const altitude = maxDiff * 100000; // Rough conversion to meters
-
-        // Fly camera to imported area with nadir view
-        setCameraTarget({
-          longitude: centerLon,
-          latitude: centerLat,
-          altitude: Math.max(altitude, 1000), // Minimum 1km altitude
-          heading: 0,
-          pitch: -90, // Nadir view (looking straight down)
-          roll: 0,
-        });
-
-        setStatusMessage(`KML imported: ${firstPolygon.name} — click map to set takeoff point`);
-        setTimeout(() => setStatusMessage(''), 6000);
-        setAddTakeoffPointMode(true);
-      };
-      input.click();
-    } catch (error) {
-      console.error('KML import failed:', error);
-      setStatusMessage('Failed to import KML file');
-      setTimeout(() => setStatusMessage(''), 3000);
-    }
-  };
-
-  const handleImportWaypointKML = async () => {
-    if (!activeMissionId) {
-      setStatusMessage('Please select or create a mission first');
-      setTimeout(() => setStatusMessage(''), 3000);
-      return;
-    }
-
-    try {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.kml,.kmz';
-      input.onchange = async (e: any) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        const waypointSet = await importWaypointKMLFile(file);
-
-        if (!waypointSet || waypointSet.coordinates.length < 2) {
-          setStatusMessage('No valid waypoint points found in KML file');
-          setTimeout(() => setStatusMessage(''), 3000);
-          return;
-        }
-
-        const viewer = getCesiumViewer();
-        const skipN = Math.max(0, Math.floor(terrainFollowSkipPoints || 0));
-        const baseWaypoints = waypointSet.coordinates.map((coord, i) =>
-          i < skipN
-            ? [coord[0], coord[1], Number.isFinite(coord[2]) ? coord[2] : altitude]
-            : [coord[0], coord[1], altitude]
-        );
-        let terrainAdjustedWaypoints: number[][];
-        if (viewer && alwaysTerrainFollow) {
-          terrainAdjustedWaypoints = await sampleTerrainWithSubPoints(viewer, baseWaypoints, altitude, terrainFollowAccuracy, terrainFollowMinDist, terrainFollowSkipPoints);
-        } else if (viewer) {
-          terrainAdjustedWaypoints = await sampleTerrainForWaypoints(viewer, baseWaypoints, altitude);
+      try {
+        let message: string;
+        if (isWaypointMission) {
+          const route = await importWaypointKMLFile(file);
+          if (!route || route.coordinates.length < 2) {
+            throw new Error('no waypoint route with at least 2 points in the file');
+          }
+          message = await applyWaypointRoute(missionId, route, buildCurrentParameters());
         } else {
-          terrainAdjustedWaypoints = baseWaypoints;
+          const [polygon] = await importKMLFile(file);
+          if (!polygon) throw new Error('no polygon in the file');
+          message = applyAreaPolygon(missionId, polygon);
         }
-
-        updateMission(activeMissionId, {
-          missionType: 'waypoint',
-          aoi: null,
-          flightLines: [
-            {
-              id: 'waypoint-import-0',
-              coordinates: terrainAdjustedWaypoints,
-              photoPoints: [],
-            },
-          ],
-        });
-
-        const lons = waypointSet.coordinates.map(coord => coord[0]);
-        const lats = waypointSet.coordinates.map(coord => coord[1]);
-        const centerLon = (Math.min(...lons) + Math.max(...lons)) / 2;
-        const centerLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-
-        setCameraTarget({
-          longitude: centerLon,
-          latitude: centerLat,
-          altitude: 2000,
-          heading: 0,
-          pitch: -90,
-          roll: 0,
-        });
-
-        setStatusMessage(`Waypoint KML imported: ${waypointSet.coordinates.length} points`);
-        setTimeout(() => setStatusMessage(''), 3000);
-      };
-      input.click();
-    } catch (error) {
-      console.error('Waypoint KML import failed:', error);
-      setStatusMessage('Failed to import waypoint KML file');
-      setTimeout(() => setStatusMessage(''), 3000);
-    }
+        setKmlEditMode(false);
+        setStatusMessage(message);
+        setTimeout(() => setStatusMessage(''), 6000);
+      } catch (error) {
+        console.error('KML import failed:', error);
+        setStatusMessage(`Failed to import: ${(error as Error).message}`);
+        setTimeout(() => setStatusMessage(''), 5000);
+      }
+    };
+    input.click();
   };
 
   const handleDrawAOI = () => {
@@ -761,7 +642,6 @@ export const FlightPlanner = () => {
     if (nextMode) {
       setKmlEditMode(false);
       setDrawWaypointMode(false);
-      updateMission(activeMissionId, { missionType: 'area', aoi: activeMission?.aoi ?? null });
       setStatusMessage('Draw mode enabled: click to add points, right-click to finish polygon');
     } else {
       setStatusMessage('Draw mode canceled');
@@ -783,7 +663,6 @@ export const FlightPlanner = () => {
     if (nextMode) {
       setKmlEditMode(false);
       setDrawAoiMode(false);
-      updateMission(activeMissionId, { missionType: 'waypoint', aoi: null });
       setStatusMessage('Waypoint draw enabled: click to add points, right-click to finish');
     } else {
       setStatusMessage('Waypoint draw canceled');
@@ -1095,6 +974,25 @@ export const FlightPlanner = () => {
     }
   };
 
+  const isWaypoint = activeMission?.missionType === 'waypoint';
+  const isArea = !isWaypoint;
+  const hasWaypointRoute = isWaypoint && (activeMission?.flightLines?.[0]?.coordinates.length ?? 0) > 0;
+  const gsd = calculateGSD(selectedCamera.sensorWidth, selectedCamera.focalLength, altitude, selectedCamera.imageWidth);
+
+  /** GSD is linear in altitude, so the altitude for a target GSD is a single division. */
+  const handleGsdChange = (nextGsd: number) => {
+    if (!Number.isFinite(nextGsd)) return;
+    const gsdPerMeter = calculateGSD(selectedCamera.sensorWidth, selectedCamera.focalLength, 1, selectedCamera.imageWidth);
+    if (!Number.isFinite(gsdPerMeter) || gsdPerMeter <= 0) return;
+    const nextAltitude = Math.min(200, Math.max(1, Math.round((Math.max(0.01, nextGsd) / gsdPerMeter) * 10) / 10));
+    handleAltitudeChange(nextAltitude);
+  };
+
+  const commitGsdDraft = () => {
+    if (gsdDraft !== null) handleGsdChange(Number(gsdDraft.replace(',', '.')));
+    setGsdDraft(null);
+  };
+
   // Check if no mission is selected
   if (!activeMissionId) {
     return (
@@ -1117,6 +1015,30 @@ export const FlightPlanner = () => {
             <p>No mission selected.</p>
             <p>Create or select a mission from the Mission Manager to start planning.</p>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Barcode Scan has its own settings; none of the area or waypoint controls apply.
+  if (activeMission?.missionType === 'barcode') {
+    return (
+      <div className={`flight-planner ${isPanelCollapsed ? 'is-collapsed' : ''}`}>
+        <button
+          type="button"
+          className="flight-planner-toggle"
+          onClick={() => setIsPanelCollapsed((prev) => !prev)}
+          title={isPanelCollapsed ? 'Show Flight Planning panel' : 'Hide Flight Planning panel'}
+          aria-label={isPanelCollapsed ? 'Show Flight Planning panel' : 'Hide Flight Planning panel'}
+        >
+          {isPanelCollapsed ? '❮' : '❯'}
+        </button>
+        <div className="flight-planner-content">
+          <h2 className="flight-planner-title">
+            <span>Flight Planning</span>
+            <span className="app-version" title={`Version ${APP_VERSION_LABEL}`}>{APP_VERSION_LABEL}</span>
+          </h2>
+          <BarcodeScanPanel key={activeMission.id} mission={activeMission} />
         </div>
       </div>
     );
@@ -1154,73 +1076,77 @@ export const FlightPlanner = () => {
         </div>
       )}
 
-      {/* Step 1: Area of Interest */}
-      <section className="planner-section">
-        <h3>1. Area of Interest</h3>
-        
-        {activeMission?.aoi ? (
-          <div className="aoi-status">
-            <div className="status-message success">
-              ✓ Area loaded: <strong>{activeMission.aoi.name}</strong>
+      {/* The type is chosen in the New Mission wizard and never changes, so the
+          panel only offers the tools and settings that belong to it. */}
+      <div className="planner-mission-head">
+        <span className={`mission-type-chip ${isArea ? 'is-area' : 'is-waypoint'}`}>
+          {isArea ? 'Area route' : 'Waypoint route'}
+        </span>
+        <span className="planner-mission-name" title={activeMission?.name}>
+          {activeMission?.name}
+        </span>
+      </div>
+
+      {activeMission && <MissionStatsHeader mission={activeMission} />}
+
+      {isArea ? (
+        <section className="planner-section">
+          <h3>Mapping Area</h3>
+
+          {drawAoiMode ? (
+            <div className="next-step is-drawing">
+              <strong>Drawing the area…</strong>
+              <span>Left-click to add corners, right-click to finish (at least 3).</span>
+              <button type="button" className="btn-secondary" onClick={handleDrawAOI}>
+                ❌ Cancel drawing
+              </button>
             </div>
-            {activeMission.missionType === 'area' && (
-              activeMission.takeoffPoint ? (
-                <div className="status-message success" style={{ marginTop: '4px' }}>
-                  🛫 Takeoff point set
-                </div>
-              ) : (
-                <div className="status-message warning" style={{ marginTop: '4px' }}>
-                  ⚠ No takeoff point — set before generating plan
-                </div>
-              )
-            )}
-            <div className="aoi-actions">
-              <button className="btn-primary" onClick={handleImportKML}>
-                📂 Import Area Mission KML
-              </button>
-              <button className="btn-primary" onClick={handleImportWaypointKML}>
-                📍 Import Waypoint KML
-              </button>
-              <button className="btn-primary" onClick={handleDrawWaypoint}>
-                {drawWaypointMode ? '❌ Cancel Waypoint Draw' : '➕ Add Waypoint'}
-              </button>
-              <button className="btn-primary" onClick={handleDrawAOI}>
-                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw Mission Area'}
-              </button>
-              {activeMission.missionType === 'area' && (
-                <button
-                  className={`btn-primary${addTakeoffPointMode ? ' btn-active-mode' : ''}`}
-                  onClick={() => setAddTakeoffPointMode(!addTakeoffPointMode)}
-                  title="Click this then click on map to set takeoff point"
-                >
-                  {addTakeoffPointMode ? '❌ Cancel' : activeMission.takeoffPoint ? '✏️ Edit Takeoff Point' : '🛫 Add Takeoff Point'}
+          ) : !activeMission?.aoi ? (
+            <div className="next-step">
+              <strong>Next: define the area to map</strong>
+              <span>Draw the polygon on the map, or import it from a KML/KMZ file.</span>
+              <div className="next-step-actions">
+                <button type="button" className="btn-primary" onClick={handleDrawAOI}>
+                  ✏️ Draw area on map
                 </button>
-              )}
+                <button type="button" className="btn-secondary" onClick={handleReplaceFromKml}>
+                  📂 Import KML/KMZ
+                </button>
+              </div>
             </div>
-            {activeMission.aoi && (
-              <div className="mission-tools-line" aria-label="KML toolbar">
+          ) : (
+            <div className="aoi-status">
+              <div className="status-message success">
+                ✓ <strong>{activeMission.aoi.name}</strong> · {describePolygon(activeMission.aoi)}
+              </div>
+
+              <button
+                type="button"
+                className={`btn-takeoff ${addTakeoffPointMode ? 'btn-active-mode' : activeMission.takeoffPoint ? 'is-set' : 'is-missing'}`}
+                onClick={() => setAddTakeoffPointMode(!addTakeoffPointMode)}
+                title="Click, then click on the map to place the reference takeoff point"
+              >
+                {addTakeoffPointMode
+                  ? '❌ Cancel — click the map to place the takeoff point'
+                  : activeMission.takeoffPoint
+                    ? '🛫 Takeoff point set · Edit'
+                    : '🛫 Reference takeoff point not set'}
+              </button>
+
+              <div className="mission-tools-line" aria-label="Area toolbar">
                 <div className="kml-toolbar kml-toolbar-inline">
-                  <button
-                    className="kml-tool-btn kml-delete"
-                    onClick={handleDeleteKML}
-                    title="Delete Area"
-                  >
+                  <button className="kml-tool-btn kml-delete" onClick={handleDeleteKML} title="Delete area">
                     🗑️
                   </button>
                   <button
                     className={`kml-tool-btn ${kmlEditMode ? 'active' : ''}`}
                     onClick={handleStartKMLEdit}
                     disabled={kmlEditMode}
-                    title="Edit Area"
+                    title="Edit area corners"
                   >
                     ✏️
                   </button>
-                  <button
-                    className="kml-tool-btn kml-save"
-                    onClick={handleSaveKMLEdit}
-                    disabled={!kmlEditMode}
-                    title="Save Area"
-                  >
+                  <button className="kml-tool-btn kml-save" onClick={handleSaveKMLEdit} disabled={!kmlEditMode} title="Save area">
                     💾
                   </button>
                 </div>
@@ -1234,67 +1160,62 @@ export const FlightPlanner = () => {
                   Height guides
                 </label>
               </div>
-            )}
-          </div>
-        ) : (
-          <div className="aoi-status">
-            {activeMission?.missionType === 'waypoint' && activeMission.flightLines.length > 0 ? (
-              <div className="status-message success">
-                ✓ Waypoint route loaded: <strong>{activeMission.flightLines[0]?.coordinates.length || 0}</strong> points
-              </div>
-            ) : (
-              <div className="status-message warning">
-                ⚠ No area defined
-              </div>
-            )}
-            <div className="aoi-actions">
-              <button className="btn-primary" onClick={handleImportKML}>
-                📂 Import Area Mission KML
-              </button>
-              <button className="btn-primary" onClick={handleImportWaypointKML}>
-                📍 Import Waypoint KML
-              </button>
-              <button className="btn-primary" onClick={handleDrawWaypoint}>
-                {drawWaypointMode ? '❌ Cancel Waypoint Draw' : '➕ Add Waypoint'}
-              </button>
-              <button className="btn-primary" onClick={handleDrawAOI}>
-                {drawAoiMode ? '❌ Cancel Draw' : '✏️ Draw Mission Area'}
-              </button>
-              {activeMission?.missionType === 'area' && (
-                <button
-                  className={`btn-primary${addTakeoffPointMode ? ' btn-active-mode' : ''}`}
-                  onClick={() => setAddTakeoffPointMode(!addTakeoffPointMode)}
-                  title="Click this then click on map to set takeoff point"
-                >
-                  {addTakeoffPointMode ? '❌ Cancel' : activeMission.takeoffPoint ? '✏️ Edit Takeoff Point' : '🛫 Add Takeoff Point'}
+              <div className="geometry-replace-row">
+                <button type="button" className="btn-secondary" onClick={handleDrawAOI}>
+                  ✏️ Redraw area
                 </button>
-              )}
+                <button type="button" className="btn-secondary" onClick={handleReplaceFromKml}>
+                  📂 Replace from KML
+                </button>
+              </div>
             </div>
+          )}
+        </section>
+      ) : (
+        <section className="planner-section">
+          <h3>Route</h3>
 
-            {activeMission?.missionType === 'waypoint' && activeMission.flightLines.length > 0 && (
+          {drawWaypointMode ? (
+            <div className="next-step is-drawing">
+              <strong>Adding waypoints…</strong>
+              <span>Left-click the waypoints in flight order, right-click to finish (at least 2).</span>
+              <button type="button" className="btn-secondary" onClick={handleDrawWaypoint}>
+                ❌ Cancel drawing
+              </button>
+            </div>
+          ) : !hasWaypointRoute ? (
+            <div className="next-step">
+              <strong>Next: create the route</strong>
+              <span>Click the waypoints on the map, or import them from a KML/KMZ file.</span>
+              <div className="next-step-actions">
+                <button type="button" className="btn-primary" onClick={handleDrawWaypoint}>
+                  ➕ Add waypoints on map
+                </button>
+                <button type="button" className="btn-secondary" onClick={handleReplaceFromKml}>
+                  📂 Import KML/KMZ
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="aoi-status">
+              <div className="status-message success">
+                ✓ Route with <strong>{activeMission?.flightLines[0]?.coordinates.length ?? 0}</strong> waypoints
+              </div>
+
               <div className="mission-tools-line" aria-label="Waypoint toolbar">
                 <div className="kml-toolbar kml-toolbar-inline">
-                  <button
-                    className="kml-tool-btn kml-delete"
-                    onClick={handleDeleteKML}
-                    title="Delete Waypoints"
-                  >
+                  <button className="kml-tool-btn kml-delete" onClick={handleDeleteKML} title="Delete waypoints">
                     🗑️
                   </button>
                   <button
                     className={`kml-tool-btn ${kmlEditMode ? 'active' : ''}`}
                     onClick={handleStartKMLEdit}
                     disabled={kmlEditMode}
-                    title="Edit Waypoints"
+                    title="Edit waypoints"
                   >
                     ✏️
                   </button>
-                  <button
-                    className="kml-tool-btn kml-save"
-                    onClick={handleSaveKMLEdit}
-                    disabled={!kmlEditMode}
-                    title="Save Waypoints"
-                  >
+                  <button className="kml-tool-btn kml-save" onClick={handleSaveKMLEdit} disabled={!kmlEditMode} title="Save waypoints">
                     💾
                   </button>
                 </div>
@@ -1308,15 +1229,22 @@ export const FlightPlanner = () => {
                   Height guides
                 </label>
               </div>
-            )}
-          </div>
-        )}
-      </section>
+              <div className="geometry-replace-row">
+                <button type="button" className="btn-secondary" onClick={handleDrawWaypoint}>
+                  ✏️ Redraw route
+                </button>
+                <button type="button" className="btn-secondary" onClick={handleReplaceFromKml}>
+                  📂 Replace from KML
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
-      {/* Step 2: Drone Configuration */}
       <section className="planner-section">
         <h3 className="section-title-row" onClick={() => setShowDroneConfig(!showDroneConfig)}>
-          2. Drone Configuration <span>{showDroneConfig ? '▾' : '▸'}</span>
+          Drone &amp; Camera <span>{showDroneConfig ? '▾' : '▸'}</span>
         </h3>
 
         {showDroneConfig && (
@@ -1354,9 +1282,8 @@ export const FlightPlanner = () => {
         )}
       </section>
 
-      {/* Common Flight Parameters */}
       <section className="planner-section">
-        <h3>3. Common Flight Parameters</h3>
+        <h3>{isArea ? 'Altitude & Resolution' : 'Flight'}</h3>
 
         <label>
           Altitude (m AGL):
@@ -1381,6 +1308,33 @@ export const FlightPlanner = () => {
             />
           </div>
         </label>
+
+        {isArea && (
+          <div className="planner-field">
+            GSD (cm/px):
+            <div className="gsd-stepper">
+              <button type="button" onClick={() => handleGsdChange(gsd - 1)}>-1</button>
+              <button type="button" onClick={() => handleGsdChange(gsd - 0.1)}>-0.1</button>
+              <input
+                className="gsd-input"
+                type="number"
+                value={gsdDraft ?? gsd.toFixed(2)}
+                min="0.01"
+                step="0.1"
+                onChange={(e) => setGsdDraft(e.target.value)}
+                onBlur={commitGsdDraft}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitGsdDraft();
+                }}
+              />
+              <button type="button" onClick={() => handleGsdChange(gsd + 0.1)}>+0.1</button>
+              <button type="button" onClick={() => handleGsdChange(gsd + 1)}>+1</button>
+            </div>
+            <small className="field-hint">
+              Ground distance covered by one pixel. Changing it moves the altitude, and the other way round.
+            </small>
+          </div>
+        )}
 
         <label>
           Flight Speed (m/s):
@@ -1412,9 +1366,23 @@ export const FlightPlanner = () => {
           )}
         </label>
 
-        {/* Always Terrain Follow — hidden for AREA missions (their points are already terrain-sampled;
-            use Elevation Tolerance in section 4 instead). Kept for waypoint missions. */}
-        {activeMission?.missionType !== 'area' && (
+        <label>
+          Safe Takeoff Altitude (m):
+          <input
+            type="number"
+            value={safeTakeoffAltitude}
+            onChange={(e) => setSafeTakeoffAltitude(Number(e.target.value))}
+            onBlur={() => setSafeTakeoffAltitude(clampSafeTakeoffAltitude(safeTakeoffAltitude))}
+            min="1.2"
+            max="1500"
+            step="1"
+          />
+          <small className="field-hint">
+            After takeoff the aircraft climbs to this height before flying to the first waypoint.
+          </small>
+        </label>
+
+        {isWaypoint && (
         <div className="terrain-follow-settings">
           <label className="inline-toggle terrain-follow-toggle">
             <input
@@ -1525,18 +1493,14 @@ export const FlightPlanner = () => {
         )}
       </section>
 
-      {/* Photogrammetry Parameters */}
-      <section className="planner-section">
-        <h3 className="section-title-row" onClick={() => setShowPhotogrammetry(!showPhotogrammetry)}>
-          4. Photogrammetry Parameters <span>{showPhotogrammetry ? '▾' : '▸'}</span>
-        </h3>
+      {isArea && (
+        <section className="planner-section">
+          <h3 className="section-title-row" onClick={() => setShowPhotogrammetry(!showPhotogrammetry)}>
+            Photogrammetry <span>{showPhotogrammetry ? '▾' : '▸'}</span>
+          </h3>
 
-        {showPhotogrammetry && (
-          <>
-            {activeMission?.missionType === 'waypoint' ? (
-              <div className="status-message warning">Disabled for waypoint missions</div>
-            ) : (
-              <>
+          {showPhotogrammetry && (
+            <>
                 <label>
                   Forward Overlap (%):
                   <div className="range-control-row">
@@ -1665,23 +1629,18 @@ export const FlightPlanner = () => {
                     </div>
                   )}
                 </div>
-              </>
-            )}
-          </>
-        )}
-      </section>
+            </>
+          )}
+        </section>
+      )}
 
-      {/* Waypoint Mission Parameters */}
-      <section className="planner-section">
-        <h3 className="section-title-row" onClick={() => setShowWaypointSettings(!showWaypointSettings)}>
-          5. Waypoint Settings <span>{showWaypointSettings ? '▾' : '▸'}</span>
-        </h3>
+      {isWaypoint && (
+        <section className="planner-section">
+          <h3 className="section-title-row" onClick={() => setShowWaypointSettings(!showWaypointSettings)}>
+            Waypoint Settings <span>{showWaypointSettings ? '▾' : '▸'}</span>
+          </h3>
 
-        {showWaypointSettings && (
-          <>
-            {activeMission?.missionType !== 'waypoint' ? (
-              <div className="status-message warning">Enable by importing waypoint KML</div>
-            ) : (
+          {showWaypointSettings && (
               <div className="waypoint-settings-layout">
                 <div className="waypoint-field-row">
                   <label className="waypoint-compact-field">
@@ -1825,22 +1784,35 @@ export const FlightPlanner = () => {
                 <h4 className="waypoint-subsection-title">Selected Waypoint Parameters</h4>
                 <SelectedWaypointPanel missionId={activeMissionId} />
               </div>
-            )}
-          </>
-        )}
+          )}
+        </section>
+      )}
+
+      <section className="planner-section">
+        <h3>Upon Completion</h3>
+        <label>
+          When the route is finished:
+          <select value={finishAction} onChange={(e) => setFinishAction(e.target.value as FinishAction)}>
+            <option value="goHome">Return to home</option>
+            <option value="noAction">Hover (no action)</option>
+            <option value="autoLand">Land at the last waypoint</option>
+            <option value="gotoFirstWaypoint">Fly back to the first waypoint</option>
+          </select>
+        </label>
       </section>
 
-      {/* Step 6: Collision Analysis */}
       <section className="planner-section">
         <h3 className="section-title-row" onClick={() => setShowCollisionAnalysis(!showCollisionAnalysis)}>
-          6. Collision Analysis <span>{showCollisionAnalysis ? '▾' : '▸'}</span>
+          Collision Analysis <span>{showCollisionAnalysis ? '▾' : '▸'}</span>
         </h3>
 
         {showCollisionAnalysis && (
           <>
             {!(activeMission?.flightLines && activeMission.flightLines.length > 0) ? (
               <div className="status-message warning">
-                No flight line to analyze — import or draw a waypoint route first
+                {isArea
+                  ? 'No flight lines to analyze — generate the flight plan first'
+                  : 'No route to analyze — add or import waypoints first'}
               </div>
             ) : (
               <div className="collision-analysis-layout">
@@ -1951,8 +1923,7 @@ export const FlightPlanner = () => {
         )}
       </section>
 
-      {/* Calculated Results */}
-      {activeMission?.missionType !== 'waypoint' && flightPlan && (
+      {isArea && flightPlan && (
         <section className="planner-section results">
           <h3>Calculated Results</h3>
 
@@ -2005,8 +1976,7 @@ export const FlightPlanner = () => {
         </section>
       )}
 
-      {/* Generated Flight Plan Summary */}
-      {activeMission?.flightLines && activeMission.flightLines.length > 0 && (
+      {isWaypoint && activeMission?.flightLines && activeMission.flightLines.length > 0 && (
         <section className="planner-section">
           <h3>📋 Flight Plan Summary</h3>
           <div className="calculated-results">
@@ -2067,29 +2037,39 @@ export const FlightPlanner = () => {
         </section>
       )}
 
-      {/* Action Buttons */}
       <section className="planner-section actions">
-        <button 
-          className="btn-primary" 
-          onClick={handleGenerateFlightPlan}
-          disabled={!activeMission?.aoi || activeMission?.missionType === 'waypoint'}
-          title={activeMission?.missionType === 'waypoint' ? 'Disabled for waypoint missions' : !activeMission?.aoi ? 'Import KML or draw an area first' : 'Generate flight lines'}
-        >
-          🚁 Generate Flight Plan
-        </button>
-        
-        <button 
-          className="btn-secondary"
-          onClick={handleUpdateMission}
-        >
+        {isArea && (
+          <button
+            className="btn-primary"
+            onClick={handleGenerateFlightPlan}
+            disabled={!activeMission?.aoi}
+            title={
+              !activeMission?.aoi
+                ? 'Draw or import the area first'
+                : !activeMission.takeoffPoint
+                  ? 'Set the reference takeoff point first'
+                  : 'Generate flight lines'
+            }
+          >
+            🚁 Generate Flight Plan
+          </button>
+        )}
+
+        <button className="btn-secondary" onClick={handleUpdateMission}>
           💾 Save Parameters
         </button>
-        
-        <button 
+
+        <button
           className="btn-secondary"
           onClick={() => handleExportToDJI()}
           disabled={!activeMission?.flightLines || activeMission.flightLines.length === 0}
-          title={!activeMission?.flightLines?.length ? 'Generate flight plan first' : 'Export to DJI Pilot 2'}
+          title={
+            activeMission?.flightLines?.length
+              ? 'Export to DJI Pilot 2'
+              : isArea
+                ? 'Generate the flight plan first'
+                : 'Add waypoints first'
+          }
         >
           📤 Export to DJI
         </button>

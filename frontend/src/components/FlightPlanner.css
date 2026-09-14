@@ -726,3 +726,220 @@
   color: #059669;
   font-weight: 500;
 }
+
+/* ------------------------------------------------------------------ */
+/* Mission type header and stats                                       */
+/* ------------------------------------------------------------------ */
+
+.planner-mission-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: -4px 0 10px;
+}
+
+.mission-type-chip {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.mission-type-chip.is-area {
+  background: #0d6efd;
+}
+
+.mission-type-chip.is-waypoint {
+  background: #7c3aed;
+}
+
+.planner-mission-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: #212529;
+}
+
+.mission-stats {
+  display: grid;
+  gap: 1px;
+  margin-bottom: 14px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  background: #dee2e6;
+  overflow: hidden;
+}
+
+.mission-stats.cols-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.mission-stats.cols-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.mission-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+  background: #f8f9fa;
+}
+
+.mission-stat-label {
+  font-size: 10px;
+  color: #6c757d;
+  white-space: nowrap;
+}
+
+.mission-stat-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: #212529;
+}
+
+/* Next step callout: what to do before the mission has geometry */
+
+.next-step {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px dashed #9ec5fe;
+  border-radius: 8px;
+  background: #f3f8ff;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #495057;
+}
+
+.next-step strong {
+  font-size: 13px;
+  color: #0b3d91;
+}
+
+.next-step.is-drawing {
+  border-style: solid;
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.next-step.is-drawing strong {
+  color: #92400e;
+}
+
+.next-step-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* Reference takeoff point, as prominent as in FlightHub 2 */
+
+.btn-takeoff {
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.btn-takeoff.is-missing {
+  background: #0d6efd;
+  color: #fff;
+}
+
+.btn-takeoff.is-missing:hover {
+  background: #0b5ed7;
+}
+
+.btn-takeoff.is-set {
+  background: #e8f5ee;
+  border-color: #a3cfbb;
+  color: #146c43;
+}
+
+.btn-takeoff.is-set:hover {
+  background: #d7eee2;
+}
+
+.btn-takeoff.btn-active-mode {
+  color: #fff;
+}
+
+.geometry-replace-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.geometry-replace-row .btn-secondary {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+/* GSD ↔ altitude */
+
+.planner-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #495057;
+}
+
+.gsd-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gsd-stepper button {
+  flex: none;
+  padding: 5px 7px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  background: #f8f9fa;
+  color: #343a40;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gsd-stepper button:hover {
+  background: #e9ecef;
+}
+
+.planner-section .gsd-stepper input.gsd-input {
+  flex: 1;
+  min-width: 60px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.field-hint {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: #6c757d;
+}

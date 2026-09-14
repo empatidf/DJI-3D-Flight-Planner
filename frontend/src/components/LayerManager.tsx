@@ -6,6 +6,7 @@
 import React from 'react';
 import { useMissionStore, type Layer } from '../stores/mission-store';
 import { fetchCesiumAssets, filterImageryAssets, getAssetMetadata, validateCesiumToken, type CesiumIonAsset } from '../lib/cesium-ion-api';
+import { getIonAssetBounds, type IonAssetType } from '../lib/ion-asset-bounds';
 import {
   buildLocalLayer,
   getLocalRegistryVersion,
@@ -54,7 +55,7 @@ const areLayersEquivalent = (a: ReturnType<typeof useMissionStore.getState>['lay
 export const LayerManager = () => {
   const layers = useMissionStore((state) => state.layers);
   const activeMissionId = useMissionStore((state) => state.activeMissionId);
-  const updateMission = useMissionStore((state) => state.updateMission);
+  const setMissionLayerSnapshot = useMissionStore((state) => state.setMissionLayerSnapshot);
   const viewMode = useMissionStore((state) => state.viewMode);
   const toggleLayerVisibility = useMissionStore((state) => state.toggleLayerVisibility);
   const updateLayer = useMissionStore((state) => state.updateLayer);
@@ -68,6 +69,7 @@ export const LayerManager = () => {
   const [cesiumAssets, setCesiumAssets] = React.useState<CesiumIonAsset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = React.useState<string>('');
   const [isLoadingAssets, setIsLoadingAssets] = React.useState(false);
+  const [zoomingLayerId, setZoomingLayerId] = React.useState<string | null>(null);
   const [tokenInput, setTokenInput] = React.useState('');
   const [isCheckingToken, setIsCheckingToken] = React.useState(false);
   const [isTokenEditing, setIsTokenEditing] = React.useState(true);
@@ -156,16 +158,17 @@ export const LayerManager = () => {
       .getState()
       .missions.find((mission) => mission.id === activeMissionId);
 
+    // Missions load asynchronously; nothing to snapshot into before they arrive.
+    if (!currentMission) return;
+
     const nextSnapshot = layers.map((layer) => ({ ...layer }));
 
-    if (currentMission?.layerSnapshot && areLayersEquivalent(currentMission.layerSnapshot, nextSnapshot)) {
+    if (currentMission.layerSnapshot && areLayersEquivalent(currentMission.layerSnapshot, nextSnapshot)) {
       return;
     }
 
-    updateMission(activeMissionId, {
-      layerSnapshot: nextSnapshot,
-    });
-  }, [layers, activeMissionId, updateMission]);
+    setMissionLayerSnapshot(activeMissionId, nextSnapshot);
+  }, [layers, activeMissionId, setMissionLayerSnapshot]);
 
   const handleAddCesiumAsset = async () => {
     if (!selectedAssetId) {
@@ -183,10 +186,15 @@ export const LayerManager = () => {
     
     if (!asset) return;
     
+    const assetType = asset.type as IonAssetType;
+
     try {
-      // Get asset metadata for bounds
-      const metadata = await getAssetMetadata(assetId, cesiumToken);
-      
+      // The bounds come from the data itself; the metadata record has none.
+      const [metadata, bounds] = await Promise.all([
+        getAssetMetadata(assetId, cesiumToken),
+        getIonAssetBounds(assetId, assetType, cesiumToken),
+      ]);
+
       // Add layer with Cesium Ion asset
       addLayer({
         name: asset.name,
@@ -194,30 +202,12 @@ export const LayerManager = () => {
         visible: true,
         opacity: asset.type === 'TERRAIN' ? 1.0 : 1.0,
         cesiumAssetId: assetId,
-        cesiumAssetType: asset.type as 'IMAGERY' | 'TERRAIN' | '3DTILES',
+        cesiumAssetType: assetType,
         data: metadata,
       });
-      
-      // Fly to asset if it has bounds
-      if (metadata?.rectangle) {
-        const rect = metadata.rectangle;
-        const centerLon = (rect.west + rect.east) / 2;
-        const centerLat = (rect.south + rect.north) / 2;
-        const lonDiff = rect.east - rect.west;
-        const latDiff = rect.north - rect.south;
-        const maxDiff = Math.max(lonDiff, latDiff);
-        const altitude = maxDiff * 100000;
-        
-        setCameraTarget({
-          longitude: centerLon,
-          latitude: centerLat,
-          altitude: Math.max(altitude, 500),
-          heading: 0,
-          pitch: -90,
-          roll: 0,
-        });
-      }
-      
+
+      if (bounds) flyToBounds(bounds);
+
       // Reset selection
       setSelectedAssetId('');
       
@@ -237,11 +227,28 @@ export const LayerManager = () => {
     setCameraTarget({
       longitude: (bounds.west + bounds.east) / 2,
       latitude: (bounds.south + bounds.north) / 2,
-      altitude: Math.max(maxDiff * 100000, 500),
+      altitude: Math.min(Math.max(maxDiff * 100000, 500), 20_000_000),
       heading: 0,
       pitch: -90,
       roll: 0,
     });
+  };
+
+  const handleZoomToIonLayer = async (layer: Layer) => {
+    const assetId = Number(layer.cesiumAssetId);
+    if (!Number.isFinite(assetId) || !cesiumToken) return;
+
+    setZoomingLayerId(layer.id);
+    try {
+      const bounds = await getIonAssetBounds(assetId, layer.cesiumAssetType, cesiumToken);
+      if (bounds) {
+        flyToBounds(bounds);
+      } else {
+        alert(`Could not determine where ${layer.name} is located`);
+      }
+    } finally {
+      setZoomingLayerId(null);
+    }
   };
 
   const localLayers = layers.filter((layer) => layer.type === 'local-tiff');
@@ -409,6 +416,22 @@ export const LayerManager = () => {
                   </span>
                 )}
               </label>
+
+              {layer.type === 'cesium-ion' && Number.isFinite(Number(layer.cesiumAssetId)) && (
+                <button
+                  className="layer-zoom-btn"
+                  onClick={() => handleZoomToIonLayer(layer)}
+                  disabled={zoomingLayerId === layer.id || !cesiumToken}
+                  title="Center the map on this asset"
+                  aria-label={`Center the map on ${layer.name}`}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                    <circle cx="8" cy="8" r="4.5" />
+                    <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
+                    <path d="M8 0.5v3M8 12.5v3M0.5 8h3M12.5 8h3" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
 
               {layer.id !== 'basemap' && layer.id !== 'terrain' && (
                 <button

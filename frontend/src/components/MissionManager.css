@@ -576,3 +576,160 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* ------------------------------------------------------------------ */
+/* Project folder: where missions are saved                            */
+/* ------------------------------------------------------------------ */
+
+.folder-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 10px 0;
+  padding: 7px 8px 7px 9px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  background: #f8f9fa;
+  font-size: 11px;
+  flex: none;
+}
+
+.folder-bar.is-ok {
+  background: #f0faf3;
+  border-color: #b7e1c1;
+}
+
+.folder-bar.is-warn {
+  background: #fff8e6;
+  border-color: #f3d48a;
+}
+
+.folder-bar.is-error {
+  background: #fff3f3;
+  border-color: #f1a9a9;
+}
+
+.folder-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #adb5bd;
+  flex: none;
+}
+
+.folder-bar.is-ok .folder-dot {
+  background: #28a745;
+}
+
+.folder-bar.is-warn .folder-dot {
+  background: #f59f00;
+}
+
+.folder-bar.is-error .folder-dot {
+  background: #dc3545;
+}
+
+.folder-bar.is-saving .folder-dot {
+  animation: folderPulse 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes folderPulse {
+  from { opacity: 1; }
+  to   { opacity: 0.3; }
+}
+
+.folder-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.folder-title {
+  font-weight: 600;
+  color: #212529;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-detail {
+  color: #495057;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.folder-hint {
+  color: #6c757d;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.folder-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.folder-btn {
+  padding: 3px 9px;
+  border: 1px solid #ced4da;
+  border-radius: 5px;
+  background: #fff;
+  color: #495057;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.folder-btn:hover:not(:disabled) {
+  background: #f1f3f5;
+  border-color: #adb5bd;
+  color: #212529;
+}
+
+.folder-btn.is-primary {
+  background: #0d6efd;
+  border-color: #0d6efd;
+  color: #fff;
+}
+
+.folder-btn.is-primary:hover:not(:disabled) {
+  background: #0b5ed7;
+  border-color: #0b5ed7;
+  color: #fff;
+}
+
+.folder-btn:disabled,
+.folder-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.folder-actions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.folder-icon-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #6c757d;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.folder-icon-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+  color: #212529;
+}

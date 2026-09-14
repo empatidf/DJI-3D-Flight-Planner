@@ -1,0 +1,362 @@
+/* New Mission wizard. Rendered into <body>: the left rail clips overflow and the
+   planner panel's transform would trap a fixed backdrop inside it. */
+
+.nmw-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 14, 20, 0.45);
+}
+
+.nmw-dialog {
+  width: min(640px, 100%);
+  max-height: min(90vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  color: #1c2128;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+}
+
+.nmw-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #f4f6f8;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.nmw-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.nmw-head button {
+  border: 0;
+  background: none;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nmw-head button:hover:not(:disabled) {
+  color: #000;
+}
+
+/* Step indicator */
+
+.nmw-steps {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 10px 16px;
+  list-style: none;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+.nmw-steps li {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a94a3;
+  white-space: nowrap;
+}
+
+.nmw-steps li span {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #e9ecef;
+  color: #6c757d;
+  font-size: 10px;
+}
+
+.nmw-steps li.is-current {
+  color: #0d6efd;
+}
+
+.nmw-steps li.is-current span {
+  background: #0d6efd;
+  color: #fff;
+}
+
+.nmw-steps li.is-done {
+  color: #198754;
+}
+
+.nmw-steps li.is-done span {
+  background: #d1e7dd;
+  color: #198754;
+}
+
+/* Body */
+
+.nmw-body {
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nmw-lead {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.nmw-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #6c757d;
+}
+
+.nmw-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.nmw-cards.cols-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+/* Barcode Scan: the aircraft is fixed, shown instead of chosen */
+.nmw-fixed-aircraft {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  font-size: 12px;
+}
+
+.nmw-fixed-aircraft div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nmw-fixed-note {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.nmw-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px;
+  border: 2px solid #dee2e6;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.nmw-card:hover {
+  border-color: #9ec5fe;
+}
+
+.nmw-card.is-selected {
+  border-color: #0d6efd;
+  background: #f3f8ff;
+  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12);
+}
+
+.nmw-card strong {
+  font-size: 13px;
+}
+
+.nmw-card-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #5c6670;
+}
+
+.nmw-card-icon {
+  width: 40px;
+  height: 40px;
+  color: #0d6efd;
+}
+
+/* File pick */
+
+.nmw-file {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed #ced4da;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.nmw-file .nmw-btn {
+  align-self: flex-start;
+}
+
+.nmw-file-ok {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: #146c43;
+  overflow-wrap: anywhere;
+}
+
+.nmw-file-ok span {
+  font-size: 11px;
+  color: #495057;
+}
+
+.nmw-file-error {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #b02a37;
+}
+
+/* Fields */
+
+.nmw-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #495057;
+}
+
+.nmw-field input,
+.nmw-field select {
+  padding: 7px 9px;
+  border: 1px solid #ced4da;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 13px;
+  font-family: inherit;
+  color: #1c2128;
+}
+
+.nmw-field input:focus,
+.nmw-field select:focus {
+  outline: none;
+  border-color: #0d6efd;
+  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
+}
+
+.nmw-count {
+  align-self: flex-end;
+  font-size: 10px;
+  font-weight: 500;
+  color: #8a94a3;
+}
+
+.nmw-summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f8f9fa;
+  font-size: 12px;
+}
+
+.nmw-summary dt {
+  color: #6c757d;
+}
+
+.nmw-summary dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* Footer */
+
+.nmw-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  background: #fafbfc;
+}
+
+.nmw-foot-right {
+  display: flex;
+  gap: 8px;
+}
+
+.nmw-btn {
+  padding: 7px 14px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  background: #fff;
+  color: #343a40;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nmw-btn:hover:not(:disabled) {
+  background: #f1f3f5;
+}
+
+.nmw-btn.is-primary {
+  background: #0d6efd;
+  border-color: #0d6efd;
+  color: #fff;
+}
+
+.nmw-btn.is-primary:hover:not(:disabled) {
+  background: #0b5ed7;
+  border-color: #0b5ed7;
+}
+
+.nmw-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 520px) {
+  .nmw-cards,
+  .nmw-cards.cols-3 {
+    grid-template-columns: 1fr;
+  }
+
+  .nmw-steps li {
+    justify-content: center;
+    font-size: 0;
+    gap: 0;
+  }
+}
