@@ -193,6 +193,8 @@ interface MissionStore {
   missionsMigrated: boolean;
   /** Barcode Scan mission whose installation-direction line is drawn on the map (transient). */
   installationLineMissionId: string | null;
+  /** Barcode Scan mission whose tables are being picked on the map (transient). */
+  tableSelectMissionId: string | null;
 
   // Mission actions
   addMission: (mission: Omit<Mission, 'id' | 'createdAt' | 'updatedAt'>) => string;
@@ -207,6 +209,7 @@ interface MissionStore {
   setMissionLayerSnapshot: (id: string, layers: Layer[]) => void;
   markMissionsMigrated: () => void;
   setInstallationLineMissionId: (id: string | null) => void;
+  setTableSelectMissionId: (id: string | null) => void;
 
   // Per-waypoint actions (operate on flightLines[0] of the given mission)
   setSelectedWaypointIndex: (index: number | null) => void;
@@ -360,6 +363,7 @@ export const useMissionStore = create<MissionStore>()(
       missionDefaults: {},
       missionsMigrated: false,
       installationLineMissionId: null,
+      tableSelectMissionId: null,
 
       // Mission actions
       addMission: (mission) => {
@@ -458,6 +462,10 @@ export const useMissionStore = create<MissionStore>()(
 
       setInstallationLineMissionId: (id) => {
         set((state) => (state.installationLineMissionId === id ? state : { installationLineMissionId: id }));
+      },
+
+      setTableSelectMissionId: (id) => {
+        set((state) => (state.tableSelectMissionId === id ? state : { tableSelectMissionId: id }));
       },
 
       // Per-waypoint overrides -------------------------------------------------

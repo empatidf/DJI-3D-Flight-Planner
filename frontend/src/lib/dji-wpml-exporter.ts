@@ -7,6 +7,7 @@
 import JSZip from 'jszip';
 import type { FlightParameters, Mission, WaypointOverride } from '../stores/mission-store';
 import { waypointKey } from '../stores/mission-store';
+import { DEFAULT_SCAN_SPEED_MPS } from './barcode-panels';
 import {
   buildActionXml,
   getActionDef,
@@ -62,7 +63,8 @@ const formatWpmlFloat = (value: unknown, fallback: number, maxDecimals = 2): str
  */
 export const normalizeYaw = (value: unknown, fallback = 0): number => {
   const parsed = parseWpmlFloat(value, fallback);
-  const wrapped = ((parsed + 180) % 360 + 360) % 360 - 180;
+  // Rounded to 0.01°: the modulo leaves float noise such as 96.79999999999995.
+  const wrapped = Math.round((((parsed + 180) % 360 + 360) % 360 - 180) * 100) / 100;
   // Map the -180 boundary to +180 to match DJI's convention and avoid -0.
   return wrapped === -180 ? 180 : wrapped;
 };
@@ -104,17 +106,47 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
     ? targetFirstAltitude
     : firstWaypointAltitude;
 
+  // Barcode Scan routes hold absolute altitudes; their heights are measured
+  // from the ground altitude stored with the takeoff point.
+  const isBarcode = mission.missionType === 'barcode';
+  const takeoffGround = isBarcode ? Number(mission.takeoffPoint?.[2]) : Number.NaN;
+  if (isBarcode && !Number.isFinite(takeoffGround)) {
+    throw new Error('Set the takeoff point first: route heights are measured from it.');
+  }
+
   const normalizedWaypoints = allWaypoints.map((waypoint) => ({
     ...waypoint,
-    alt: normalizedFirstAltitude + (waypoint.alt - firstWaypointAltitude),
+    alt: Number.isFinite(takeoffGround)
+      ? waypoint.alt - takeoffGround
+      : normalizedFirstAltitude + (waypoint.alt - firstWaypointAltitude),
   }));
 
+  // A barcode scan flies at its own speed and a fixed heading, by default along
+  // the panel rows, and stops on every waypoint: the points sit centimetres
+  // above the panels and include straight climbs and descents, where a
+  // coordinated turn would cut the corner.
+  const exportMission: Mission = isBarcode
+    ? {
+        ...mission,
+        parameters: {
+          ...mission.parameters,
+          speed: mission.barcode?.scan?.flightSpeedMps ?? DEFAULT_SCAN_SPEED_MPS,
+          globalHeadingMode: 'smoothTransition',
+          droneYaw:
+            mission.barcode?.scan?.droneYawDeg ??
+            mission.barcode?.structure?.installationBearing ??
+            mission.parameters.droneYaw,
+        },
+      }
+    : mission;
+  const stopAtWaypoints = isBarcode;
+
   // DJI Pilot 2 expects files inside the wpmz folder in KMZ
-  const waylinesContent = generateWaylinesWPML(mission, normalizedWaypoints);
+  const waylinesContent = generateWaylinesWPML(exportMission, normalizedWaypoints, stopAtWaypoints);
   zip.file('wpmz/waylines.wpml', waylinesContent);
 
   // Create template.kml (for editing)
-  const templateContent = generateTemplateKML(mission, normalizedWaypoints);
+  const templateContent = generateTemplateKML(exportMission, normalizedWaypoints, stopAtWaypoints);
   zip.file('wpmz/template.kml', templateContent);
 
   // Generate KMZ file
@@ -129,7 +161,7 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
 /**
  * Generate waylines.wpml content (executable waypoint file)
  */
-const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): string => {
+const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[], stopAtWaypoints = false): string => {
   const { parameters, drone, camera } = mission;
   const finishAction = parameters.finishAction ?? 'goHome';
   const takeOffSecurityHeight = formatWpmlFloat(
@@ -181,7 +213,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
   // Add waypoints. Action group ids must be unique across the whole file.
   const groupIds: GroupIdCounter = { next: 0 };
   waypoints.forEach((wp, index) => {
-    xml += generateWaypointXML(wp, index, parameters, waypoints.length, groupIds);
+    xml += generateWaypointXML(wp, index, parameters, waypoints.length, groupIds, stopAtWaypoints);
   });
 
   xml += `  </Folder>
@@ -194,7 +226,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): stri
 /**
  * Generate template.kml content (for user editing)
  */
-const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): string => {
+const generateTemplateKML = (mission: Mission, waypoints: WaypointData[], stopAtWaypoints = false): string => {
   const { parameters, drone, camera } = mission;
   const finishAction = parameters.finishAction ?? 'goHome';
   const takeOffSecurityHeight = formatWpmlFloat(
@@ -270,14 +302,14 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): strin
       <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
       <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
     </wpml:globalWaypointHeadingParam>
-    <wpml:globalWaypointTurnMode>coordinateTurn</wpml:globalWaypointTurnMode>
+    <wpml:globalWaypointTurnMode>${stopAtWaypoints ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn'}</wpml:globalWaypointTurnMode>
     <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
 `;
 
   // Add waypoints with their action groups
   const groupIds: GroupIdCounter = { next: 0 };
   waypoints.forEach((wp, index) => {
-    xml += generateTemplateWaypointXML(wp, index, parameters, waypoints.length, groupIds);
+    xml += generateTemplateWaypointXML(wp, index, parameters, waypoints.length, groupIds, stopAtWaypoints);
   });
 
   // Pilot 2 writes payloadParam after the placemarks.
@@ -550,7 +582,8 @@ const generateWaypointXML = (
   index: number,
   parameters: FlightParameters,
   totalWaypoints: number,
-  groupIds: GroupIdCounter
+  groupIds: GroupIdCounter,
+  stopAtWaypoints = false
 ): string => {
   const override = waypoint.override;
   const { headingMode, headingAngle } = resolveWaypointHeading(parameters, override);
@@ -564,9 +597,9 @@ const generateWaypointXML = (
    * DJI Pilot 2 converts those two points to a straight-in stop when it generates
    * waylines.wpml, even though template.kml keeps coordinateTurn everywhere.
    */
-  const isRouteEndpoint = index === 0 || index === totalWaypoints - 1;
-  const turnMode = isRouteEndpoint ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
-  const dampingDist = isRouteEndpoint
+  const stopsHere = stopAtWaypoints || index === 0 || index === totalWaypoints - 1;
+  const turnMode = stopsHere ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
+  const dampingDist = stopsHere
     ? '0'
     : formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2, 0.2, 2);
 
@@ -614,17 +647,17 @@ const generateTemplateWaypointXML = (
   index: number,
   parameters: FlightParameters,
   totalWaypoints: number,
-  groupIds: GroupIdCounter
+  groupIds: GroupIdCounter,
+  stopAtWaypoints = false
 ): string => {
   const override = waypoint.override;
   const { headingMode, headingAngle } = resolveWaypointHeading(parameters, override);
   const gimbal = resolveWaypointGimbal(parameters, override);
   const speedValue = formatWpmlFloat(override?.speed ?? parameters.speed, 8, 2);
-  const dampingDist = formatWpmlFloat(
-    override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2,
-    0.2,
-    2
-  );
+  const turnMode = stopAtWaypoints ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
+  const dampingDist = stopAtWaypoints
+    ? '0'
+    : formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2, 0.2, 2);
 
   // DJI requires a per-point pitch only when the route uses "For Each Waypoint".
   const gimbalPitchAngleTag =
@@ -648,7 +681,7 @@ const generateTemplateWaypointXML = (
         <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
       </wpml:waypointHeadingParam>
       <wpml:waypointTurnParam>
-        <wpml:waypointTurnMode>coordinateTurn</wpml:waypointTurnMode>
+        <wpml:waypointTurnMode>${turnMode}</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>${dampingDist}</wpml:waypointTurnDampingDist>
       </wpml:waypointTurnParam>
       <wpml:useStraightLine>1</wpml:useStraightLine>${gimbalPitchAngleTag}

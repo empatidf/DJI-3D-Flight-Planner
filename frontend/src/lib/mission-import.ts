@@ -154,13 +154,16 @@ export const flyToBounds = (bounds: PanelBounds) =>
   );
 
 /**
- * Set a Barcode Scan mission's panel layout. The display style survives a
- * re-import: only the panels are replaced.
+ * Set a Barcode Scan mission's panel layout. The display style and scan
+ * settings survive a re-import; the table selection and the route belonged
+ * to the old panels and are cleared.
  */
 export const applyBarcodePanels = (missionId: string, fileName: string, layout: ParsedPanelLayout): string => {
   const mission = requireMission(missionId, 'barcode');
+  const scan = mission.barcode?.scan;
 
   useMissionStore.getState().updateMission(missionId, {
+    flightLines: [],
     barcode: {
       sourceFileName: fileName,
       panelCount: layout.panelCount,
@@ -170,6 +173,7 @@ export const applyBarcodePanels = (missionId: string, fileName: string, layout: 
       panelSize: layout.panelSize,
       structure: layout.structure,
       label: mission.barcode?.label,
+      scan: scan && { ...scan, tables: undefined, routeKey: undefined },
       style: { ...DEFAULT_PANEL_STYLE, ...mission.barcode?.style },
     },
   });

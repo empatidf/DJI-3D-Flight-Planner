@@ -33,6 +33,8 @@ export interface PanelStyle {
   barcodeColor: string; // CSS colour, #rrggbb
   barcodeSize: number; // screen pixels (symbol size)
   barcodeSymbol: BarcodeSymbol;
+  /** Table numbers written at the table centres on the map. */
+  tableNamesEnabled: boolean;
 }
 
 /** Outlined only: the imagery underneath stays readable. */
@@ -47,6 +49,7 @@ export const DEFAULT_PANEL_STYLE: PanelStyle = {
   barcodeColor: '#ff3bd4',
   barcodeSize: 6,
   barcodeSymbol: 'diamond',
+  tableNamesEnabled: false,
 };
 
 export interface PanelBounds {
@@ -235,6 +238,45 @@ export interface ParsedPanelLayout {
   structure: PanelStructure | null;
 }
 
+/** Default safe jump height for barcode scan flights, meters. */
+export const DEFAULT_SAFE_JUMP_M = 2;
+/** Default scan altitude for barcode scan flights, meters (a decimal value). */
+export const DEFAULT_SCAN_ALTITUDE_M = 0.8;
+/** Default flight speed for barcode scan flights, m/s (a decimal value). */
+export const DEFAULT_SCAN_SPEED_MPS = 1;
+
+/**
+ * Scan flight settings of a Barcode Scan mission. Every field is optional:
+ * a setting that was never changed uses its DEFAULT_* value.
+ */
+export interface BarcodeScanSettings {
+  /** Safe jump height, meters. */
+  safeJumpM?: number;
+  /** Scan altitude, meters. */
+  scanAltitudeM?: number;
+  /** Flight speed, m/s. */
+  flightSpeedMps?: number;
+  /** Aircraft heading during the scan, degrees clockwise from north; defaults to the installation direction. */
+  droneYawDeg?: number;
+  /** Table numbers to scan, in flight order (the order they were picked). */
+  tables?: number[];
+  /** Corner of every table where its scan starts, as seen on a north-up map. */
+  startCorner?: ScanStartCorner;
+  /** Inputs the stored route was generated from, to tell when it is out of date. */
+  routeKey?: string;
+}
+
+export type ScanStartCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+export const SCAN_START_CORNERS: { id: ScanStartCorner; label: string }[] = [
+  { id: 'top-left', label: 'Top left' },
+  { id: 'top-right', label: 'Top right' },
+  { id: 'bottom-left', label: 'Bottom left' },
+  { id: 'bottom-right', label: 'Bottom right' },
+];
+
+export const DEFAULT_SCAN_START_CORNER: ScanStartCorner = 'bottom-left';
+
 /** What a Barcode Scan mission stores. */
 export interface BarcodeScanData extends Omit<ParsedPanelLayout, 'skipped' | 'documentName' | 'structure'> {
   sourceFileName: string;
@@ -243,6 +285,8 @@ export interface BarcodeScanData extends Omit<ParsedPanelLayout, 'skipped' | 'do
   structure?: PanelStructure | null;
   /** Where the serial-number label sits; unset until chosen in the Barcode position pop-up. */
   label?: BarcodeLabelSettings;
+  /** Scan flight settings; unset until one is changed, defaults apply meanwhile. */
+  scan?: BarcodeScanSettings;
 }
 
 const PLACEMARK_PATTERN = /<Placemark\b[\s\S]*?<\/Placemark>/g;
@@ -829,6 +873,368 @@ export const computeBarcodePoints = (
   }
 
   return points;
+};
+
+export interface NumberedTable {
+  /** 1-based, line by line from the top left of the map. */
+  number: number;
+  /** [lon, lat] mean of the table's module centres */
+  center: [number, number];
+  panels: number;
+  /** [lon, lat] corners of the rectangle around the table, aligned with the installation direction */
+  outline: [number, number][];
+}
+
+/**
+ * Unit vectors of the table lines: along the installation direction towards
+ * east (east–west tables) or north (north–south tables), and across the lines
+ * towards north or east. Local metric frame, x east and y north.
+ */
+const tableLineAxes = (installationBearing: number) => {
+  const bearingRad = (installationBearing * Math.PI) / 180;
+  let alongX = Math.sin(bearingRad);
+  let alongY = Math.cos(bearingRad);
+  const runsEastWest = Math.abs(alongX) >= Math.abs(alongY);
+  if (runsEastWest ? alongX < 0 : alongY < 0) {
+    alongX = -alongX;
+    alongY = -alongY;
+  }
+  return {
+    runsEastWest,
+    alongX,
+    alongY,
+    acrossX: runsEastWest ? -alongY : alongY,
+    acrossY: runsEastWest ? alongX : -alongX,
+  };
+};
+
+export interface TableNumbering {
+  tables: NumberedTable[];
+  /** Table number of every panel, indexed like the panels. */
+  tableOfPanel: Int32Array;
+}
+
+/**
+ * Number the tables so they can be referred to, in map reading order.
+ *
+ * Tables first form lines along the installation direction. East–west lines
+ * are numbered from the northernmost down, each from west to east; north–south
+ * lines from the westernmost to the right, each from north to south. Uses the
+ * same table detection as the structure, so the count matches what is shown.
+ */
+export const numberTables = (
+  corners: ArrayLike<number>,
+  { tableGapM, installationBearing }: { tableGapM: number; installationBearing: number }
+): TableNumbering => {
+  const count = Math.floor(corners.length / 8);
+  const tableOfPanel = new Int32Array(count);
+  const modules = prepareModules(corners);
+  if (!modules) return { tables: [], tableOfPanel };
+
+  const { centerX, centerY, lon0, lat0, kx, ky } = modules;
+  const { tables } = detectTables(modules, resolveTableGap(modules, tableGapM));
+
+  const { runsEastWest, alongX, alongY, acrossX, acrossY } = tableLineAxes(installationBearing);
+  const toDegrees = (along: number, across: number): [number, number] => [
+    lon0 + (along * alongX + across * acrossX) / kx,
+    lat0 + (along * alongY + across * acrossY) / ky,
+  ];
+
+  const summaries = [...tables.values()].map((members) => {
+    let sumX = 0;
+    let sumY = 0;
+    let minAcross = Infinity;
+    let maxAcross = -Infinity;
+    // Extent of the module corners, for the outline.
+    let edgeMinAlong = Infinity;
+    let edgeMaxAlong = -Infinity;
+    let edgeMinAcross = Infinity;
+    let edgeMaxAcross = -Infinity;
+    for (const panel of members) {
+      sumX += centerX[panel];
+      sumY += centerY[panel];
+      const across = centerX[panel] * acrossX + centerY[panel] * acrossY;
+      if (across < minAcross) minAcross = across;
+      if (across > maxAcross) maxAcross = across;
+      const o = panel * 8;
+      for (let c = 0; c < 8; c += 2) {
+        const x = (corners[o + c] - lon0) * kx;
+        const y = (corners[o + c + 1] - lat0) * ky;
+        const cornerAlong = x * alongX + y * alongY;
+        const cornerAcross = x * acrossX + y * acrossY;
+        if (cornerAlong < edgeMinAlong) edgeMinAlong = cornerAlong;
+        if (cornerAlong > edgeMaxAlong) edgeMaxAlong = cornerAlong;
+        if (cornerAcross < edgeMinAcross) edgeMinAcross = cornerAcross;
+        if (cornerAcross > edgeMaxAcross) edgeMaxAcross = cornerAcross;
+      }
+    }
+    const cx = sumX / members.length;
+    const cy = sumY / members.length;
+    const acrossPosition = cx * acrossX + cy * acrossY;
+    const alongPosition = cx * alongX + cy * alongY;
+    return {
+      members,
+      cx,
+      cy,
+      // Top line first (east–west) or left line first (north–south) ...
+      lineKey: runsEastWest ? -acrossPosition : acrossPosition,
+      // ... then west to east, or north to south.
+      alongKey: runsEastWest ? alongPosition : -alongPosition,
+      width: maxAcross - minAcross + modules.maxLongSide,
+      outline: [
+        toDegrees(edgeMinAlong, edgeMinAcross),
+        toDegrees(edgeMaxAlong, edgeMinAcross),
+        toDegrees(edgeMaxAlong, edgeMaxAcross),
+        toDegrees(edgeMinAlong, edgeMaxAcross),
+      ],
+    };
+  });
+
+  // Table centres closer than half a table width across the lines share a line.
+  const lineBreak = 0.5 * median(summaries.map((summary) => summary.width));
+  summaries.sort((a, b) => a.lineKey - b.lineKey);
+  const lines: (typeof summaries)[] = [];
+  summaries.forEach((summary, index) => {
+    if (index === 0 || summary.lineKey - summaries[index - 1].lineKey > lineBreak) lines.push([]);
+    lines[lines.length - 1].push(summary);
+  });
+
+  const numbered: NumberedTable[] = [];
+  for (const line of lines) {
+    line.sort((a, b) => a.alongKey - b.alongKey);
+    for (const summary of line) {
+      const number = numbered.length + 1;
+      for (const panel of summary.members) tableOfPanel[panel] = number;
+      numbered.push({
+        number,
+        center: [lon0 + summary.cx / kx, lat0 + summary.cy / ky],
+        panels: summary.members.length,
+        outline: summary.outline,
+      });
+    }
+  }
+
+  return { tables: numbered, tableOfPanel };
+};
+
+const numberingCache: { corners: string; tableGapM: number; installationBearing: number; result: TableNumbering }[] = [];
+const NUMBERING_CACHE_SIZE = 4;
+
+/**
+ * numberTables for a stored layout, remembered for the last few layouts: the
+ * map labels, table picking and the scan panel all ask for the same numbers.
+ */
+export const numberTablesCached = (
+  corners: string,
+  options: { tableGapM: number; installationBearing: number }
+): TableNumbering => {
+  const hit = numberingCache.find(
+    (entry) =>
+      entry.corners === corners &&
+      entry.tableGapM === options.tableGapM &&
+      entry.installationBearing === options.installationBearing
+  );
+  if (hit) return hit.result;
+
+  const result = numberTables(decodePanelCorners(corners), options);
+  numberingCache.unshift({ corners, ...options, result });
+  if (numberingCache.length > NUMBERING_CACHE_SIZE) numberingCache.pop();
+  return result;
+};
+
+/** Number of the table whose outline holds the point, allowing `toleranceM` around it; null if none. */
+export const findTableAt = (tables: NumberedTable[], lon: number, lat: number, toleranceM = 0.3): number | null => {
+  const kx = METERS_PER_DEGREE_LON_AT_EQUATOR * Math.cos((lat * Math.PI) / 180);
+  let best: { number: number; outside: number } | null = null;
+
+  for (const table of tables) {
+    const x = table.outline.map(([cornerLon]) => (cornerLon - lon) * kx);
+    const y = table.outline.map(([, cornerLat]) => (cornerLat - lat) * METERS_PER_DEGREE_LAT);
+    // Shoelace sign tells which side of each edge is inside.
+    let area = 0;
+    for (let i = 0; i < 4; i++) area += x[i] * y[(i + 1) % 4] - x[(i + 1) % 4] * y[i];
+    const orientation = area >= 0 ? 1 : -1;
+
+    // Largest distance of the point outside any edge; <= 0 means inside.
+    let outside = -Infinity;
+    for (let i = 0; i < 4; i++) {
+      const next = (i + 1) % 4;
+      const edgeX = x[next] - x[i];
+      const edgeY = y[next] - y[i];
+      const length = Math.hypot(edgeX, edgeY) || 1;
+      // Signed distance of the origin (the point) to the edge line, positive inside.
+      const inside = (orientation * (edgeX * -y[i] - edgeY * -x[i])) / length;
+      outside = Math.max(outside, -inside);
+    }
+    if (outside <= toleranceM && (!best || outside < best.outside)) best = { number: table.number, outside };
+  }
+
+  return best?.number ?? null;
+};
+
+export interface ScanPathOptions {
+  /** Detection settings, so rows and numbers match what is shown. */
+  tableGapM: number;
+  installationBearing: number;
+  label: BarcodeLabelSettings;
+  /** Table numbers in flight order. */
+  tables: number[];
+  startCorner: ScanStartCorner;
+  /** From numberTables with the same detection settings. */
+  tableOfPanel: Int32Array;
+}
+
+export interface ScanTablePath {
+  number: number;
+  /** Straight barcode lines flown along the table */
+  lines: number;
+  /** Barcodes on the table; close pairs share one scan point, so `points` can be fewer. */
+  barcodes: number;
+  /** [lon, lat] scan points in scan order */
+  points: [number, number][];
+}
+
+/** A barcode or scan point in the table's frame, metres along and across the table line. */
+interface ScanItem {
+  lon: number;
+  lat: number;
+  along: number;
+  across: number;
+}
+
+/**
+ * Two barcodes of a line closer than `distanceM` become one scan point halfway
+ * between them. With upside-down modules, neighbouring rows put their labels
+ * face to face on the lines inside the table; one stop reads both.
+ */
+const mergeClosePairs = (line: ScanItem[], distanceM: number): ScanItem[] => {
+  const stops: ScanItem[] = [];
+  for (let i = 0; i < line.length; i++) {
+    const item = line[i];
+    const next = line[i + 1];
+    if (next && Math.hypot(next.along - item.along, next.across - item.across) < distanceM) {
+      stops.push({
+        lon: (item.lon + next.lon) / 2,
+        lat: (item.lat + next.lat) / 2,
+        along: (item.along + next.along) / 2,
+        across: (item.across + next.across) / 2,
+      });
+      i++;
+    } else {
+      stops.push(item);
+    }
+  }
+  return stops;
+};
+
+/**
+ * Barcode positions of the chosen tables in the order they are scanned.
+ *
+ * The aircraft flies straight lines along the table, one per line of barcodes,
+ * not one per module row: with upside-down modules the labels of one row sit
+ * on both of its edges, and labels of neighbouring rows that face each other
+ * only centimetres apart share one line. On such a line two barcodes closer
+ * than half a module are scanned from one point halfway between them.
+ *
+ * The first table starts at the chosen corner of a north-up map. Lines are
+ * flown back and forth: after a line the aircraft moves to the nearest next
+ * line and flies it the other way, so there are no empty return legs. Every
+ * next table starts on its line and at its end nearest to where the previous
+ * table ended. Tables keep the given order; numbers that no longer exist are
+ * left out.
+ */
+export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOptions): ScanTablePath[] => {
+  const modules = prepareModules(corners);
+  if (!modules || options.tables.length === 0) return [];
+  const { longAxisX, longAxisY, longSide, shortSide } = modules;
+
+  const points = computeBarcodePoints(corners, {
+    tableGapM: options.tableGapM,
+    installationBearing: options.installationBearing,
+    settings: options.label,
+  });
+
+  const membersOf = new Map<number, number[]>();
+  for (const number of options.tables) membersOf.set(number, []);
+  for (let panel = 0; panel < modules.count; panel++) {
+    membersOf.get(options.tableOfPanel[panel])?.push(panel);
+  }
+
+  const { alongX, alongY, acrossX, acrossY } = tableLineAxes(options.installationBearing);
+  // The corner as a compass direction; rows and row ends nearest to it come first.
+  const cornerX = options.startCorner.endsWith('right') ? 1 : -1;
+  const cornerY = options.startCorner.startsWith('top') ? 1 : -1;
+  const acrossSign = acrossX * cornerX + acrossY * cornerY >= 0 ? 1 : -1;
+  const alongSign = alongX * cornerX + alongY * cornerY >= 0 ? 1 : -1;
+
+  const { lon0, lat0, kx, ky } = modules;
+  const paths: ScanTablePath[] = [];
+  const done = new Set<number>();
+  // Where the previous table's scan ended, as [along, across].
+  let previousEnd: [number, number] | null = null;
+
+  for (const number of options.tables) {
+    const members = membersOf.get(number);
+    if (done.has(number) || !members || members.length === 0) continue;
+    done.add(number);
+
+    const first = members[0];
+    const longAlong = Math.abs(longAxisX[first] * alongX + longAxisY[first] * alongY);
+    const moduleAcross = (1 - longAlong) * longSide[first] + longAlong * shortSide[first];
+    const moduleAlong = longAlong * longSide[first] + (1 - longAlong) * shortSide[first];
+    // Labels facing each other across a row gap merge; the two edges of one module stay apart.
+    const lineGapM = Math.max(0.35, 0.3 * moduleAcross);
+    // Neighbours along one row are a whole module apart, so they never pair up.
+    const pairDistanceM = 0.5 * moduleAlong;
+
+    const items: ScanItem[] = [];
+    for (const panel of members) {
+      const lon = points[panel * 2];
+      const lat = points[panel * 2 + 1];
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+      const x = (lon - lon0) * kx;
+      const y = (lat - lat0) * ky;
+      items.push({ lon, lat, along: x * alongX + y * alongY, across: x * acrossX + y * acrossY });
+    }
+    if (items.length === 0) continue;
+
+    const nearerSign = (value: number, min: number, max: number) =>
+      Math.abs(value - max) <= Math.abs(value - min) ? 1 : -1;
+
+    let lineSign = acrossSign;
+    if (previousEnd) {
+      const acrossValues = items.map((item) => item.across);
+      lineSign = nearerSign(previousEnd[1], Math.min(...acrossValues), Math.max(...acrossValues));
+    }
+    // First line: the one furthest towards lineSign.
+    items.sort((a, b) => (b.across - a.across) * lineSign);
+    const lines: (typeof items)[] = [];
+    items.forEach((item, k) => {
+      if (k === 0 || Math.abs(item.across - items[k - 1].across) > lineGapM) lines.push([]);
+      lines[lines.length - 1].push(item);
+    });
+
+    let endSign = alongSign;
+    if (previousEnd) {
+      const alongValues = lines[0].map((item) => item.along);
+      endSign = nearerSign(previousEnd[0], Math.min(...alongValues), Math.max(...alongValues));
+    }
+
+    const tablePoints: [number, number][] = [];
+    let lastStop = items[0];
+    lines.forEach((line, lineIndex) => {
+      line.sort((a, b) => (b.along - a.along) * endSign);
+      const stops = mergeClosePairs(line, pairDistanceM);
+      if (lineIndex % 2 === 1) stops.reverse();
+      for (const stop of stops) tablePoints.push([stop.lon, stop.lat]);
+      lastStop = stops[stops.length - 1];
+    });
+
+    previousEnd = [lastStop.along, lastStop.across];
+    paths.push({ number, lines: lines.length, barcodes: items.length, points: tablePoints });
+  }
+
+  return paths;
 };
 
 /**

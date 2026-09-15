@@ -32,6 +32,12 @@ import {
   Cesium3DTileStyle,
   HeightReference,
   VerticalOrigin,
+  BoundingSphere,
+  HeadingPitchRange,
+  LabelStyle,
+  HorizontalOrigin,
+  DistanceDisplayCondition,
+  NearFarScalar,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore, waypointKey } from '../stores/mission-store';
@@ -48,7 +54,9 @@ import {
   DEFAULT_PANEL_STYLE,
   computeBarcodePoints,
   decodePanelCorners,
+  findTableAt,
   formatInstallationDirection,
+  numberTablesCached,
   type BarcodeScanData,
   type PanelStyle,
 } from '../lib/barcode-panels';
@@ -123,7 +131,8 @@ const createBadgeCanvas = (lines: string[], background: string) => {
 export const CesiumMap = () => {
   const viewerRef = useRef<Viewer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const compassArrowRef = useRef<HTMLDivElement>(null);
+  const compassArrowRef = useRef<HTMLButtonElement>(null);
+  const compassHeadingRef = useRef<HTMLSpanElement>(null);
   const [viewerInitVersion, setViewerInitVersion] = useState(0);
   // Bumped when the terrain provider changes and again once its tiles have streamed
   // in, so anything sampling terrain heights is rebuilt against the real surface.
@@ -180,6 +189,11 @@ export const CesiumMap = () => {
   const localImageryLayersRef = useRef<Record<string, ImageryLayer>>({});
   const localTerrainLayerIdRef = useRef<string | null>(null);
   const localAppliedViewerVersionRef = useRef<number>(-1);
+  // Barcode Scan table number labels per mission, tied to the viewer that owns them.
+  const tableLabelsRef = useRef<{
+    viewer: Viewer | null;
+    missions: Map<string, { corners: string; key: string; ids: string[] }>;
+  }>({ viewer: null, missions: new Map() });
   // Barcode Scan panel layers per mission, tied to the viewer that owns them.
   const panelLayersRef = useRef<{ viewer: Viewer | null; layers: Map<string, PanelLayer> }>({
     viewer: null,
@@ -213,6 +227,7 @@ export const CesiumMap = () => {
   const layers = useMissionStore((state) => state.layers);
   const cesiumToken = useMissionStore((state) => state.cesiumToken);
   const installationLineMissionId = useMissionStore((state) => state.installationLineMissionId);
+  const tableSelectMissionId = useMissionStore((state) => state.tableSelectMissionId);
   const activeMissionIdForKmlEdit = kmlEditMode ? activeMissionId : null;
 
   const getLonLatFromScreenPosition = (viewer: Viewer, position: Cartesian2) => {
@@ -382,12 +397,21 @@ export const CesiumMap = () => {
     console.log('[Init] Cesium viewer created; viewerInitVersion incremented');
 
     let compassAngleDegrees = 0;
+    let compassHeadingText = '';
 
     const updateCompassHeading = () => {
       if (!compassArrowRef.current) return;
 
       const headingDegrees = CesiumMath.toDegrees(viewer.camera.heading);
       if (!Number.isFinite(headingDegrees)) return;
+
+      // Runs every frame: write the text only when the rounded heading changes.
+      const normalized = Math.round((((headingDegrees % 360) + 360) % 360) * 10) / 10;
+      const headingText = `${(normalized >= 360 ? 0 : normalized).toFixed(1)}°`;
+      if (headingText !== compassHeadingText && compassHeadingRef.current) {
+        compassHeadingText = headingText;
+        compassHeadingRef.current.textContent = headingText;
+      }
 
       const targetAngle = -headingDegrees;
       let delta = targetAngle - compassAngleDegrees;
@@ -469,6 +493,39 @@ export const CesiumMap = () => {
       window.removeEventListener('scroll', closeMenu, true);
     };
   }, [contextMenuState.visible]);
+
+  /**
+   * Turn the view back to north. In 3D and 2.5D the camera swings around the
+   * ground point in the middle of the screen, keeping tilt and distance, so
+   * the same area stays in view; turning in place would slide it sideways.
+   */
+  const resetHeadingToNorth = () => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+    const { camera, scene } = viewer;
+    const duration = 0.8;
+
+    if (scene.mode !== SceneMode.SCENE2D) {
+      const center = new Cartesian2(scene.canvas.clientWidth / 2, scene.canvas.clientHeight / 2);
+      const ray = camera.getPickRay(center);
+      const target = (ray && scene.globe.pick(ray, scene)) ?? camera.pickEllipsoid(center);
+      if (target) {
+        camera.flyToBoundingSphere(new BoundingSphere(target, 0), {
+          offset: new HeadingPitchRange(0, camera.pitch, Cartesian3.distance(camera.positionWC, target)),
+          duration,
+        });
+        return;
+      }
+    }
+
+    // 2D, or nothing under the centre (looking at the sky): turn in place.
+    const position = camera.positionCartographic;
+    camera.flyTo({
+      destination: Cartesian3.fromRadians(position.longitude, position.latitude, position.height),
+      orientation: { heading: 0, pitch: camera.pitch, roll: 0 },
+      duration,
+    });
+  };
 
   const handleMapContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1186,6 +1243,176 @@ export const CesiumMap = () => {
       cancelled = true;
     };
   }, [installationLineStructure, viewerInitVersion, terrainReadyVersion]);
+
+  // Barcode Scan: table numbers at the table centres, when switched on
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+
+    const registry = tableLabelsRef.current;
+    if (registry.viewer !== viewer) {
+      registry.viewer = viewer;
+      registry.missions.clear();
+    }
+
+    const wanted = new Map<string, { data: BarcodeScanData; key: string }>();
+    missions.forEach((mission) => {
+      const data = mission.barcode;
+      if (mission.missionType !== 'barcode' || !mission.visible || !data?.structure) return;
+      if (!{ ...DEFAULT_PANEL_STYLE, ...data.style }.tableNamesEnabled) return;
+      wanted.set(mission.id, {
+        data,
+        // Numbers follow the table detection; heights follow the terrain.
+        key: `${data.structure.tableGapM}|${data.structure.installationBearing}|${terrainReadyVersion}`,
+      });
+    });
+
+    registry.missions.forEach((entry, missionId) => {
+      const target = wanted.get(missionId);
+      if (!target || target.data.corners !== entry.corners || target.key !== entry.key) {
+        entry.ids.forEach((id) => viewer.entities.removeById(id));
+        registry.missions.delete(missionId);
+      }
+    });
+
+    wanted.forEach(({ data, key }, missionId) => {
+      if (registry.missions.has(missionId) || !data.structure) return;
+      const entry = { corners: data.corners, key, ids: [] as string[] };
+      registry.missions.set(missionId, entry);
+
+      const { tables } = numberTablesCached(data.corners, {
+        tableGapM: data.structure.tableGapM,
+        installationBearing: data.structure.installationBearing,
+      });
+
+      // Placed at the sampled terrain height: clamping to ground left labels at
+      // the ellipsoid on world terrain, far below high sites.
+      sampleTerrainForWaypoints(
+        viewer,
+        tables.map((table) => [table.center[0], table.center[1], 0]),
+        1.5
+      )
+        .then((positions) => {
+          if (viewer.isDestroyed() || registry.missions.get(missionId) !== entry) return;
+          tables.forEach((table, index) => {
+            const [lon, lat, height] = positions[index] ?? [table.center[0], table.center[1], 0];
+            const id = `table-label-${missionId}-${table.number}`;
+            viewer.entities.removeById(id);
+            viewer.entities.add({
+              id,
+              position: Cartesian3.fromDegrees(lon, lat, height),
+              label: {
+                text: String(table.number),
+                font: 'bold 17px sans-serif',
+                fillColor: Color.WHITE,
+                outlineColor: Color.fromCssColorString('#0b1320'),
+                outlineWidth: 4,
+                style: LabelStyle.FILL_AND_OUTLINE,
+                horizontalOrigin: HorizontalOrigin.CENTER,
+                verticalOrigin: VerticalOrigin.CENTER,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+                // Hidden when zoomed far out, where hundreds of numbers would only clutter.
+                distanceDisplayCondition: new DistanceDisplayCondition(0, 5000),
+                scaleByDistance: new NearFarScalar(150, 1.15, 3000, 0.7),
+              },
+            });
+            entry.ids.push(id);
+          });
+          viewer.scene.requestRender();
+        })
+        .catch((error) => {
+          console.warn('[TableLabels] Could not place table numbers:', error);
+        });
+    });
+  }, [missions, viewerInitVersion, terrainReadyVersion]);
+
+  // Barcode Scan: pick tables on the map. A click adds the table under the
+  // cursor to the end of the scan order, a click on a picked table removes it.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed() || !tableSelectMissionId) return;
+    const missionId = tableSelectMissionId;
+
+    viewer.canvas.style.cursor = 'crosshair';
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    handler.setInputAction((event: { position: Cartesian2 }) => {
+      const lonLat = getLonLatFromScreenPosition(viewer, event.position);
+      if (!lonLat) return;
+      const store = useMissionStore.getState();
+      const data = store.missions.find((item) => item.id === missionId)?.barcode;
+      if (!data?.structure) return;
+
+      const { tables } = numberTablesCached(data.corners, {
+        tableGapM: data.structure.tableGapM,
+        installationBearing: data.structure.installationBearing,
+      });
+      const number = findTableAt(tables, lonLat.lon, lonLat.lat);
+      if (number === null) return;
+
+      const picked = data.scan?.tables ?? [];
+      const next = picked.includes(number) ? picked.filter((item) => item !== number) : [...picked, number];
+      store.updateMission(missionId, { barcode: { ...data, scan: { ...data.scan, tables: next } } });
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') useMissionStore.getState().setTableSelectMissionId(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      handler.destroy();
+      window.removeEventListener('keydown', handleKeyDown);
+      if (!viewer.isDestroyed()) viewer.canvas.style.cursor = '';
+    };
+  }, [tableSelectMissionId, viewerInitVersion]);
+
+  // Barcode Scan: outline the picked tables of the open mission
+  const activeMissionForTables = missions.find((item) => item.id === activeMissionId);
+  const pickedTablesData =
+    activeMissionForTables?.missionType === 'barcode' && activeMissionForTables.visible
+      ? activeMissionForTables.barcode ?? null
+      : null;
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+    const data = pickedTablesData;
+    const picked = data?.scan?.tables ?? [];
+    if (!data?.structure || picked.length === 0) return;
+
+    const { tables } = numberTablesCached(data.corners, {
+      tableGapM: data.structure.tableGapM,
+      installationBearing: data.structure.installationBearing,
+    });
+    const outlineColor = Color.fromCssColorString('#ff8a00');
+    const ids: string[] = [];
+
+    picked.forEach((number) => {
+      const table = tables[number - 1];
+      if (!table || table.number !== number) return;
+      const id = `table-selection-${number}`;
+      viewer.entities.removeById(id);
+      viewer.entities.add({
+        id,
+        polyline: {
+          positions: Cartesian3.fromDegreesArray([...table.outline, table.outline[0]].flat()),
+          width: 4,
+          material: outlineColor,
+          clampToGround: true,
+          zIndex: 3,
+        },
+      });
+      ids.push(id);
+    });
+    viewer.scene.requestRender();
+
+    return () => {
+      if (viewer.isDestroyed()) return;
+      ids.forEach((id) => viewer.entities.removeById(id));
+      viewer.scene.requestRender();
+    };
+  }, [pickedTablesData, viewerInitVersion]);
 
   // Barcode Scan: draw each mission's solar panels
   useEffect(() => {
@@ -2294,9 +2521,10 @@ export const CesiumMap = () => {
       const lonLat = getLonLatFromScreenPosition(viewer, event.position);
       if (!lonLat) return;
 
-      // Terrain-sample the clicked point so altitude = terrain + AGL
+      // Terrain-sample the clicked point so altitude = terrain + AGL. A Barcode
+      // Scan mission keeps the ground altitude: its heights are measured from it.
       const activeMission = useMissionStore.getState().missions.find(m => m.id === activeMissionId);
-      const agl = activeMission?.parameters.altitude ?? 0;
+      const agl = activeMission?.missionType === 'barcode' ? 0 : activeMission?.parameters.altitude ?? 0;
       const sampled = await sampleTerrainForWaypoints(viewer, [[lonLat.lon, lonLat.lat, agl]], agl);
       const alt = sampled[0]?.[2] ?? agl;
 
@@ -2324,7 +2552,7 @@ export const CesiumMap = () => {
     if (stale) viewer.entities.remove(stale);
 
     const activeMission = missions.find(m => m.id === activeMissionId);
-    if (!activeMission?.takeoffPoint || activeMission.missionType !== 'area' || !activeMission.visible) return;
+    if (!activeMission?.takeoffPoint || activeMission.missionType === 'waypoint' || !activeMission.visible) return;
 
     const [lon, lat, alt] = activeMission.takeoffPoint;
 
@@ -3166,11 +3394,22 @@ export const CesiumMap = () => {
       onContextMenu={handleMapContextMenu}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      <div className="compass-overlay" aria-label="North compass">
-        <div ref={compassArrowRef} className="compass-arrow">
+      <div className="compass-overlay" aria-label="Map heading and north compass">
+        {/* Camera heading, degrees clockwise from north; kept upright above the turning arrow. */}
+        <span ref={compassHeadingRef} className="compass-heading" title="Map heading">
+          0.0°
+        </span>
+        <button
+          ref={compassArrowRef}
+          type="button"
+          className="compass-arrow"
+          onClick={resetHeadingToNorth}
+          title="Reset heading to north"
+          aria-label="Reset heading to north"
+        >
           <span className="compass-arrow-icon">▲</span>
           <span className="compass-arrow-label">N</span>
-        </div>
+        </button>
       </div>
       {contextMenuState.visible && (
         <div
