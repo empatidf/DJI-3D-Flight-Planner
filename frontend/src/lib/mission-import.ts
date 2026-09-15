@@ -169,6 +169,7 @@ export const applyBarcodePanels = (missionId: string, fileName: string, layout: 
       bounds: layout.bounds,
       panelSize: layout.panelSize,
       structure: layout.structure,
+      label: mission.barcode?.label,
       style: { ...DEFAULT_PANEL_STYLE, ...mission.barcode?.style },
     },
   });

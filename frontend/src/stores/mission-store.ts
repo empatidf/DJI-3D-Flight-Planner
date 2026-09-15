@@ -191,6 +191,8 @@ interface MissionStore {
    * is verified this stays false and localStorage keeps holding the missions.
    */
   missionsMigrated: boolean;
+  /** Barcode Scan mission whose installation-direction line is drawn on the map (transient). */
+  installationLineMissionId: string | null;
 
   // Mission actions
   addMission: (mission: Omit<Mission, 'id' | 'createdAt' | 'updatedAt'>) => string;
@@ -204,6 +206,7 @@ interface MissionStore {
   setMissionArchived: (id: string, archived: boolean) => void;
   setMissionLayerSnapshot: (id: string, layers: Layer[]) => void;
   markMissionsMigrated: () => void;
+  setInstallationLineMissionId: (id: string | null) => void;
 
   // Per-waypoint actions (operate on flightLines[0] of the given mission)
   setSelectedWaypointIndex: (index: number | null) => void;
@@ -356,6 +359,7 @@ export const useMissionStore = create<MissionStore>()(
       cesiumToken: '',
       missionDefaults: {},
       missionsMigrated: false,
+      installationLineMissionId: null,
 
       // Mission actions
       addMission: (mission) => {
@@ -450,6 +454,10 @@ export const useMissionStore = create<MissionStore>()(
 
       markMissionsMigrated: () => {
         set({ missionsMigrated: true });
+      },
+
+      setInstallationLineMissionId: (id) => {
+        set((state) => (state.installationLineMissionId === id ? state : { installationLineMissionId: id }));
       },
 
       // Per-waypoint overrides -------------------------------------------------

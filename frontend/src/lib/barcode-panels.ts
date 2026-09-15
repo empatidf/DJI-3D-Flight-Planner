@@ -11,6 +11,16 @@
 
 import JSZip from 'jszip';
 
+/** How a barcode label is marked on the map. `label` is the sticker itself, turned with its module. */
+export type BarcodeSymbol = 'diamond' | 'square' | 'label' | 'circle';
+
+export const BARCODE_SYMBOLS: { id: BarcodeSymbol; label: string }[] = [
+  { id: 'diamond', label: 'Diamond' },
+  { id: 'square', label: 'Square' },
+  { id: 'label', label: 'Label rectangle (turned with the module)' },
+  { id: 'circle', label: 'Circle' },
+];
+
 export interface PanelStyle {
   outlineEnabled: boolean;
   outlineColor: string; // CSS colour, #rrggbb
@@ -18,6 +28,11 @@ export interface PanelStyle {
   fillEnabled: boolean;
   fillColor: string; // CSS colour, #rrggbb
   fillOpacity: number; // 0..1
+  /** Barcode label points; only drawn once a barcode position is set. */
+  barcodeEnabled: boolean;
+  barcodeColor: string; // CSS colour, #rrggbb
+  barcodeSize: number; // screen pixels (symbol size)
+  barcodeSymbol: BarcodeSymbol;
 }
 
 /** Outlined only: the imagery underneath stays readable. */
@@ -28,6 +43,10 @@ export const DEFAULT_PANEL_STYLE: PanelStyle = {
   fillEnabled: false,
   fillColor: '#ffd400',
   fillOpacity: 0.45,
+  barcodeEnabled: true,
+  barcodeColor: '#ff3bd4',
+  barcodeSize: 6,
+  barcodeSymbol: 'diamond',
 };
 
 export interface PanelBounds {
@@ -62,9 +81,144 @@ export interface PanelStructure {
   consistency: number;
   /** Table counts of the other configurations, keyed like "2P". */
   variants: Record<string, number>;
-  /** Direction the tables run, degrees clockwise from north, 0–180. */
+  /** Direction the tables run, degrees clockwise from north, 0–180 (same as installationBearing). */
   tableBearing: number;
+  /**
+   * Installation direction, 0–180 with one decimal: the course between the
+   * centres of the end modules of the longest row. The opposite course
+   * (+180) is the same line flown the other way.
+   */
+  installationBearing: number;
+  /** String gap tolerance the tables were detected with, meters. */
+  tableGapM: number;
+  /** The row that direction was measured on. */
+  installationRow: {
+    modules: number;
+    lengthM: number;
+    /** [lon, lat] centre of the first and last module of that row. */
+    start: [number, number];
+    end: [number, number];
+  };
 }
+
+/* ------------------------------------------------------------------ */
+/* Barcode label position                                              */
+/* ------------------------------------------------------------------ */
+
+export type BarcodeSlot = 'top-left' | 'top-middle' | 'top-right' | 'bottom-left' | 'bottom-middle' | 'bottom-right';
+
+/** In reading order, top row first: the order of the 3 × 2 picker. */
+export const BARCODE_SLOTS: { id: BarcodeSlot; label: string }[] = [
+  { id: 'top-left', label: 'Top left' },
+  { id: 'top-middle', label: 'Top middle' },
+  { id: 'top-right', label: 'Top right' },
+  { id: 'bottom-left', label: 'Bottom left' },
+  { id: 'bottom-middle', label: 'Bottom middle' },
+  { id: 'bottom-right', label: 'Bottom right' },
+];
+
+export type CompassSide = 'north' | 'east' | 'south' | 'west';
+
+export const COMPASS_SIDE_LABELS: Record<CompassSide, string> = {
+  north: 'North',
+  east: 'East',
+  south: 'South',
+  west: 'West',
+};
+
+/** Unit vectors in the local east/north frame. */
+const COMPASS_VECTORS: Record<CompassSide, [number, number]> = {
+  north: [0, 1],
+  east: [1, 0],
+  south: [0, -1],
+  west: [-1, 0],
+};
+
+/** The serial-number label: 10 cm along the module's short edge, 5 cm deep. */
+export const BARCODE_LABEL_WIDTH_M = 0.1;
+export const BARCODE_LABEL_DEPTH_M = 0.05;
+/** A break along a row wider than this restarts the pattern when "Reset on gap" is on. */
+export const BARCODE_GAP_RESET_M = 0.3;
+/** Default distance from a module edge to the label. */
+export const DEFAULT_LABEL_INSET_M = 0.02;
+
+export interface BarcodeLabelSettings {
+  /** Spot of the label on a module seen from above with its top edge up. */
+  slot: BarcodeSlot;
+  /** Compass side the module's top short edge faces. */
+  topEdge: CompassSide;
+  /** Rows are counted along the installation bearing ('forward') or its opposite. */
+  countAlong: 'forward' | 'reverse';
+  /** Every next module along a row is turned 180°. */
+  upsideDown: boolean;
+  /** After a break in a row the pattern starts again at `slot`. */
+  resetOnGap: boolean;
+  /** Distance from the top/bottom (short) edge to the label, meters. */
+  insetFromEndM: number;
+  /** Distance from the left/right (long) edge to the label, meters. */
+  insetFromSideM: number;
+  /** @deprecated One inset for both directions, stored by earlier versions; read through labelInsets(). */
+  insetM?: number;
+}
+
+export interface LabelInsets {
+  /** from the top/bottom (short) edge, meters */
+  fromEndM: number;
+  /** from the left/right (long) edge, meters */
+  fromSideM: number;
+}
+
+/** Insets of stored settings; settings from before the split use their single value for both. */
+export const labelInsets = (
+  settings: Partial<Pick<BarcodeLabelSettings, 'insetFromEndM' | 'insetFromSideM' | 'insetM'>>
+): LabelInsets => ({
+  fromEndM: settings.insetFromEndM ?? settings.insetM ?? DEFAULT_LABEL_INSET_M,
+  fromSideM: settings.insetFromSideM ?? settings.insetM ?? DEFAULT_LABEL_INSET_M,
+});
+
+/**
+ * Offset of the label centre from the module centre, in metres along the
+ * module's top direction and its left direction (a quarter turn
+ * counter-clockwise from top, seen from above). A flipped module is the same
+ * module turned 180°, which mirrors both offsets.
+ */
+export const slotOffset = (slot: BarcodeSlot, flipped: boolean, size: PanelSize, insets: LabelInsets) => {
+  const vertical = slot.startsWith('top') ? 1 : -1;
+  const horizontal = slot.endsWith('left') ? 1 : slot.endsWith('right') ? -1 : 0;
+  const alongTop = vertical * Math.max(0, size.length / 2 - insets.fromEndM - BARCODE_LABEL_DEPTH_M / 2);
+  const alongLeft = horizontal * Math.max(0, size.width / 2 - insets.fromSideM - BARCODE_LABEL_WIDTH_M / 2);
+  return flipped ? { alongTopM: -alongTop, alongLeftM: -alongLeft } : { alongTopM: alongTop, alongLeftM: alongLeft };
+};
+
+/** Compass bearing (0–180) of the modules' long side. */
+const moduleLongAxisBearing = (structure: PanelStructure) =>
+  ((structure.orientation === 'portrait' ? structure.installationBearing + 90 : structure.installationBearing) % 180 + 180) % 180;
+
+/** The two compass sides a module's short edges can face in this park. */
+export const topEdgeOptions = (structure: PanelStructure): [CompassSide, CompassSide] => {
+  const bearing = moduleLongAxisBearing(structure);
+  return bearing <= 45 || bearing >= 135 ? ['north', 'south'] : ['east', 'west'];
+};
+
+/**
+ * Fixed-tilt modules lean towards the equator, so their high (top) edge faces
+ * away from it. East–west modules give no such hint; west is only a start.
+ */
+export const defaultTopEdge = (structure: PanelStructure, latitude: number): CompassSide => {
+  const [first] = topEdgeOptions(structure);
+  if (first === 'north') return latitude >= 0 ? 'north' : 'south';
+  return 'west';
+};
+
+export const describeBarcodeLabel = (settings: BarcodeLabelSettings) =>
+  [
+    BARCODE_SLOTS.find((option) => option.id === settings.slot)?.label.toLowerCase() ?? settings.slot,
+    `top edge faces ${COMPASS_SIDE_LABELS[settings.topEdge].toLowerCase()}`,
+    settings.upsideDown ? 'alternating upside-down' : null,
+    settings.upsideDown && settings.resetOnGap ? 'reset on gap' : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
 
 export interface ParsedPanelLayout {
   panelCount: number;
@@ -87,6 +241,8 @@ export interface BarcodeScanData extends Omit<ParsedPanelLayout, 'skipped' | 'do
   style: PanelStyle;
   /** Missing on missions imported before table detection existed; filled in when opened. */
   structure?: PanelStructure | null;
+  /** Where the serial-number label sits; unset until chosen in the Barcode position pop-up. */
+  label?: BarcodeLabelSettings;
 }
 
 const PLACEMARK_PATTERN = /<Placemark\b[\s\S]*?<\/Placemark>/g;
@@ -169,17 +325,56 @@ const median = (values: number[]) => {
 };
 
 /**
- * Modules closer than this, edge to edge, are on the same table. Measured
- * layouts have 0–3 cm between modules and 20 cm between the rows of a table,
- * while neighbouring tables of a string sit about half a metre apart.
+ * Largest gap, edge to edge, between the rows of one table (across its width).
+ * Measured layouts have 20 cm there; kept tight so parallel strings never merge.
  */
-const TABLE_GAP_M = 0.3;
+const ROW_GAP_M = 0.3;
+
+/** Upper limit for the string gap tolerance a user can enter. */
+export const MAX_TABLE_GAP_M = 20;
+
+export interface StructureOptions {
+  /**
+   * Largest gap, edge to edge, along a string that still counts as the same
+   * table. Default: one module width.
+   */
+  tableGapM?: number;
+}
+
+interface TableShape {
+  panels: number;
+  perRow: number[];
+}
+
+/** The configuration holding the most panels. */
+const dominantShape = (shapes: Map<string, TableShape>) => {
+  let best: { key: string; shape: TableShape } | null = null;
+  for (const [key, shape] of shapes) {
+    if (!best || shape.panels > best.shape.panels) best = { key, shape };
+  }
+  return best;
+};
 
 export const structureCode = (structure: PanelStructure) =>
   `${structure.rows}${structure.orientation === 'portrait' ? 'P' : 'L'}`;
 
 export const describeStructure = (structure: PanelStructure) =>
   `${structure.rows} ${structure.rows === 1 ? 'row' : 'rows'} ${structure.orientation} (${structureCode(structure)})`;
+
+/** "96.8° – 276.8°": the installation line, both ways. */
+export const formatInstallationDirection = (bearing: number) =>
+  `${bearing.toFixed(1)}° – ${(bearing + 180).toFixed(1)}°`;
+
+/** Initial great-circle course from point 1 to point 2, degrees clockwise from north. */
+const courseDegrees = (lon1: number, lat1: number, lon2: number, lat2: number) => {
+  const toRad = Math.PI / 180;
+  const phi1 = lat1 * toRad;
+  const phi2 = lat2 * toRad;
+  const deltaLambda = (lon2 - lon1) * toRad;
+  const y = Math.sin(deltaLambda) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(deltaLambda);
+  return ((Math.atan2(y, x) / toRad) + 360) % 360;
+};
 
 const countClusters = (sorted: Float64Array, minStep: number) => {
   let clusters = sorted.length > 0 ? 1 : 0;
@@ -205,12 +400,30 @@ const mostCommon = (values: number[]) => {
   return best;
 };
 
-/**
- * Group touching modules into tables and read each table's shape: how many
- * modules stand across it and along it. The configuration holding the most
- * panels describes the park; the rest are listed as variants.
- */
-export const analysePanelStructure = (corners: ArrayLike<number>): PanelStructure | null => {
+/* ------------------------------------------------------------------ */
+/* Module geometry and table grouping, shared by structure and barcodes */
+/* ------------------------------------------------------------------ */
+
+/** Per-module centre, long axis and side lengths in a local metric frame. */
+interface ModuleGeometry {
+  count: number;
+  lon0: number;
+  lat0: number;
+  /** metres per degree of longitude / latitude at the frame origin */
+  kx: number;
+  ky: number;
+  centerX: Float64Array;
+  centerY: Float64Array;
+  longAxisX: Float64Array;
+  longAxisY: Float64Array;
+  longSide: Float64Array;
+  shortSide: Float64Array;
+  maxLongSide: number;
+  /** median short side */
+  moduleWidthM: number;
+}
+
+const prepareModules = (corners: ArrayLike<number>): ModuleGeometry | null => {
   const count = Math.floor(corners.length / 8);
   if (count === 0) return null;
 
@@ -257,8 +470,38 @@ export const analysePanelStructure = (corners: ArrayLike<number>): PanelStructur
     if (longSide[panel] > maxLongSide) maxLongSide = longSide[panel];
   }
 
-  // Neighbour search on a grid one module (plus gap) wide.
-  const cellSize = maxLongSide + TABLE_GAP_M;
+  const sortedShortSides = Float64Array.from(shortSide).sort();
+
+  return {
+    count,
+    lon0,
+    lat0,
+    kx,
+    ky,
+    centerX,
+    centerY,
+    longAxisX,
+    longAxisY,
+    longSide,
+    shortSide,
+    maxLongSide,
+    moduleWidthM: sortedShortSides[Math.floor(count / 2)],
+  };
+};
+
+const resolveTableGap = (modules: ModuleGeometry, tableGapM: number | undefined) =>
+  Math.round(Math.min(MAX_TABLE_GAP_M, Math.max(0, tableGapM ?? modules.moduleWidthM)) * 100) / 100;
+
+/**
+ * Join neighbouring modules into tables. `gapBesideM` is the allowed gap
+ * between modules whose long edges face each other, `gapEndToEndM` between
+ * modules whose short edges face each other.
+ */
+const groupTables = (modules: ModuleGeometry, gapBesideM: number, gapEndToEndM: number) => {
+  const { count, centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
+
+  // Neighbour search on a grid one module plus the widest allowed gap wide.
+  const cellSize = modules.maxLongSide + Math.max(gapBesideM, gapEndToEndM);
   const cellKey = (gx: number, gy: number) => (gx + 1e6) * 4e6 + (gy + 1e6);
   const cellX = new Int32Array(count);
   const cellY = new Int32Array(count);
@@ -294,11 +537,11 @@ export const analysePanelStructure = (corners: ArrayLike<number>): PanelStructur
           const offsetY = centerY[j] - centerY[i];
           const alongLong = Math.abs(offsetX * longAxisX[i] + offsetY * longAxisY[i]);
           const alongShort = Math.abs(-offsetX * longAxisY[i] + offsetY * longAxisX[i]);
-          const sideBySide =
-            alongLong < 0.3 * longSide[i] && alongShort > 0.5 * shortSide[i] && alongShort < shortSide[i] + TABLE_GAP_M;
+          const beside =
+            alongLong < 0.3 * longSide[i] && alongShort > 0.5 * shortSide[i] && alongShort < shortSide[i] + gapBesideM;
           const endToEnd =
-            alongShort < 0.3 * shortSide[i] && alongLong > 0.5 * longSide[i] && alongLong < longSide[i] + TABLE_GAP_M;
-          if (sideBySide || endToEnd) {
+            alongShort < 0.3 * shortSide[i] && alongLong > 0.5 * longSide[i] && alongLong < longSide[i] + gapEndToEndM;
+          if (beside || endToEnd) {
             const a = find(i);
             const b = find(j);
             if (a !== b) parent[a] = b;
@@ -315,13 +558,15 @@ export const analysePanelStructure = (corners: ArrayLike<number>): PanelStructur
     if (members) members.push(panel);
     else tables.set(root, [panel]);
   }
+  return tables;
+};
 
-  interface Shape {
-    panels: number;
-    perRow: number[];
-    bearing: number;
-  }
-  const shapes = new Map<string, Shape>();
+/** Rows and orientation of every table, collected per configuration. */
+const readShapes = (modules: ModuleGeometry, tables: Map<number, number[]>) => {
+  const { centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
+  const shapes = new Map<string, TableShape>();
+  let longestTable: number[] = [];
+  let longestTablePortrait = true;
 
   for (const members of tables.values()) {
     const first = members[0];
@@ -345,29 +590,127 @@ export const analysePanelStructure = (corners: ArrayLike<number>): PanelStructur
 
     let shape = shapes.get(key);
     if (!shape) {
-      const lengthX = portrait ? -ay : ax;
-      const lengthY = portrait ? ax : ay;
-      shape = { panels: 0, perRow: [], bearing: ((Math.atan2(lengthX, lengthY) * 180) / Math.PI + 360) % 180 };
+      shape = { panels: 0, perRow: [] };
       shapes.set(key, shape);
     }
     shape.panels += members.length;
     shape.perRow.push(Math.round(members.length / rows));
-  }
 
-  let dominantKey = '';
-  let dominant: Shape | null = null;
-  for (const [key, shape] of shapes) {
-    if (!dominant || shape.panels > dominant.panels) {
-      dominant = shape;
-      dominantKey = key;
+    if (members.length > longestTable.length) {
+      longestTable = members;
+      longestTablePortrait = portrait;
     }
   }
-  if (!dominant) return null;
+
+  return { shapes, longestTable, longestTablePortrait };
+};
+
+/**
+ * A string may have short breaks (a post, a cable crossing) and still be one
+ * table, so grouping runs twice: first with tight gaps to learn which way the
+ * tables run, then allowing `tableGapM` along that direction only. Across the
+ * table the tight row gap stays, so neighbouring strings are never joined.
+ */
+const detectTables = (modules: ModuleGeometry, tableGapM: number) => {
+  let tables = groupTables(modules, ROW_GAP_M, ROW_GAP_M);
+  let reading = readShapes(modules, tables);
+
+  if (tableGapM > ROW_GAP_M) {
+    const portrait = dominantShape(reading.shapes)?.key.endsWith('P') ?? true;
+    // Portrait tables run along the modules' short side, so their string gaps face long edges.
+    tables = portrait ? groupTables(modules, tableGapM, ROW_GAP_M) : groupTables(modules, ROW_GAP_M, tableGapM);
+    reading = readShapes(modules, tables);
+  }
+
+  return { tables, reading };
+};
+
+/**
+ * Group modules into tables and read each table's shape: how many modules
+ * stand across it and along it. The configuration holding the most panels
+ * describes the park; the rest are listed as variants.
+ */
+export const analysePanelStructure = (
+  corners: ArrayLike<number>,
+  options: StructureOptions = {}
+): PanelStructure | null => {
+  const modules = prepareModules(corners);
+  if (!modules) return null;
+  const { count, centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
+
+  const tableGapM = resolveTableGap(modules, options.tableGapM);
+  const { tables, reading } = detectTables(modules, tableGapM);
+
+  const { shapes, longestTable, longestTablePortrait } = reading;
+  const dominantEntry = dominantShape(shapes);
+  if (!dominantEntry) return null;
+  const { key: dominantKey, shape: dominant } = dominantEntry;
 
   const variants: Record<string, number> = {};
   for (const [key, shape] of shapes) {
     if (key !== dominantKey) variants[key] = shape.perRow.length;
   }
+
+  // Installation direction: course between the centres of the two end modules
+  // of the longest row. Measured over the whole row it is far steadier than
+  // the edge of a single module.
+  const reference = longestTable[0];
+  const referenceAxisX = longAxisX[reference];
+  const referenceAxisY = longAxisY[reference];
+  // Portrait tables run along the modules' short side, landscape along the long side.
+  const lengthX = longestTablePortrait ? -referenceAxisY : referenceAxisX;
+  const lengthY = longestTablePortrait ? referenceAxisX : referenceAxisY;
+  const moduleAcross = longestTablePortrait ? longSide[reference] : shortSide[reference];
+
+  const byAcross = longestTable
+    .map((panel) => ({
+      panel,
+      across: -centerX[panel] * lengthY + centerY[panel] * lengthX,
+      along: centerX[panel] * lengthX + centerY[panel] * lengthY,
+    }))
+    .sort((a, b) => a.across - b.across);
+
+  let longestRow: typeof byAcross = [];
+  let currentRow: typeof byAcross = [];
+  byAcross.forEach((item, k) => {
+    if (k > 0 && item.across - byAcross[k - 1].across > 0.5 * moduleAcross) {
+      if (currentRow.length > longestRow.length) longestRow = currentRow;
+      currentRow = [];
+    }
+    currentRow.push(item);
+  });
+  if (currentRow.length > longestRow.length) longestRow = currentRow;
+
+  let rowStart = longestRow[0];
+  let rowEnd = longestRow[0];
+  for (const item of longestRow) {
+    if (item.along < rowStart.along) rowStart = item;
+    if (item.along > rowEnd.along) rowEnd = item;
+  }
+
+  const centreDegrees = (panel: number): [number, number] => {
+    const o = panel * 8;
+    return [
+      (corners[o] + corners[o + 2] + corners[o + 4] + corners[o + 6]) / 4,
+      (corners[o + 1] + corners[o + 3] + corners[o + 5] + corners[o + 7]) / 4,
+    ];
+  };
+
+  let course: number;
+  if (longestRow.length >= 2) {
+    const [lon1, lat1] = centreDegrees(rowStart.panel);
+    const [lon2, lat2] = centreDegrees(rowEnd.panel);
+    course = courseDegrees(lon1, lat1, lon2, lat2);
+  } else {
+    // A table of one module has no row to measure; its own axis is all there is.
+    course = ((Math.atan2(lengthX, lengthY) * 180) / Math.PI + 360) % 360;
+  }
+  let installationBearing = Math.round((course % 180) * 10) / 10;
+  if (installationBearing >= 180) installationBearing -= 180;
+  const rowLengthM = Math.hypot(
+    centerX[rowEnd.panel] - centerX[rowStart.panel],
+    centerY[rowEnd.panel] - centerY[rowStart.panel]
+  );
 
   return {
     rows: parseInt(dominantKey, 10),
@@ -378,8 +721,114 @@ export const analysePanelStructure = (corners: ArrayLike<number>): PanelStructur
     maxModulesPerRow: dominant.perRow.reduce((max, value) => Math.max(max, value), 0),
     consistency: dominant.panels / count,
     variants,
-    tableBearing: Math.round(dominant.bearing * 10) / 10,
+    tableBearing: installationBearing,
+    installationBearing,
+    tableGapM,
+    installationRow: {
+      modules: longestRow.length,
+      lengthM: Math.round(rowLengthM * 10) / 10,
+      start: centreDegrees(rowStart.panel).map(roundDegrees) as [number, number],
+      end: centreDegrees(rowEnd.panel).map(roundDegrees) as [number, number],
+    },
   };
+};
+
+export interface BarcodePointOptions {
+  /** Tolerance the tables were detected with, so rows match the structure shown. */
+  tableGapM: number;
+  installationBearing: number;
+  settings: BarcodeLabelSettings;
+}
+
+/**
+ * Barcode label position of every panel as lon,lat pairs (NaN if unknown),
+ * indexed like the panels.
+ *
+ * Each row of every table is walked along the chosen course. The first module
+ * keeps the chosen spot; with upside-down installation every next module is
+ * turned 180°, and with reset on gap a break wider than BARCODE_GAP_RESET_M
+ * starts the pattern again. Tables always start fresh.
+ */
+export const computeBarcodePoints = (
+  corners: ArrayLike<number>,
+  { tableGapM, installationBearing, settings }: BarcodePointOptions
+): Float64Array => {
+  const count = Math.floor(corners.length / 8);
+  const points = new Float64Array(count * 2).fill(Number.NaN);
+  const modules = prepareModules(corners);
+  if (!modules) return points;
+
+  const { centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
+  const { tables } = detectTables(modules, resolveTableGap(modules, tableGapM));
+
+  const courseRad =
+    (((settings.countAlong === 'forward' ? installationBearing : installationBearing + 180) % 360) * Math.PI) / 180;
+  const dirX = Math.sin(courseRad);
+  const dirY = Math.cos(courseRad);
+  const [compassX, compassY] = COMPASS_VECTORS[settings.topEdge];
+  const insets = labelInsets(settings);
+
+  for (const members of tables.values()) {
+    const first = members[0];
+    // Share of the module's long side that lies along the counting direction.
+    const longAlong = Math.abs(longAxisX[first] * dirX + longAxisY[first] * dirY);
+    const moduleAlong = longAlong * longSide[first] + (1 - longAlong) * shortSide[first];
+    const moduleAcross = (1 - longAlong) * longSide[first] + longAlong * shortSide[first];
+
+    const items = members
+      .map((panel) => ({
+        panel,
+        along: centerX[panel] * dirX + centerY[panel] * dirY,
+        across: -centerX[panel] * dirY + centerY[panel] * dirX,
+      }))
+      .sort((a, b) => a.across - b.across);
+
+    // Rows of the table, split across the counting direction.
+    const rows: (typeof items)[] = [];
+    let row: typeof items = [];
+    items.forEach((item, k) => {
+      if (k > 0 && item.across - items[k - 1].across > 0.5 * moduleAcross) {
+        rows.push(row);
+        row = [];
+      }
+      row.push(item);
+    });
+    if (row.length > 0) rows.push(row);
+
+    for (const rowItems of rows) {
+      rowItems.sort((a, b) => a.along - b.along);
+      let sequence = 0;
+
+      rowItems.forEach((item, k) => {
+        if (k > 0) {
+          const gap = item.along - rowItems[k - 1].along - moduleAlong;
+          sequence = settings.resetOnGap && gap > BARCODE_GAP_RESET_M ? 0 : sequence + 1;
+        }
+        const flipped = settings.upsideDown && sequence % 2 === 1;
+
+        const panel = item.panel;
+        // Top is the end of the long axis that points towards the chosen compass side.
+        const sign = longAxisX[panel] * compassX + longAxisY[panel] * compassY >= 0 ? 1 : -1;
+        const topX = longAxisX[panel] * sign;
+        const topY = longAxisY[panel] * sign;
+        const leftX = -topY;
+        const leftY = topX;
+        const offset = slotOffset(
+          settings.slot,
+          flipped,
+          { width: shortSide[panel], length: longSide[panel] },
+          insets
+        );
+
+        const x = centerX[panel] + topX * offset.alongTopM + leftX * offset.alongLeftM;
+        const y = centerY[panel] + topY * offset.alongTopM + leftY * offset.alongLeftM;
+        points[panel * 2] = modules.lon0 + x / modules.kx;
+        points[panel * 2 + 1] = modules.lat0 + y / modules.ky;
+      });
+    }
+  }
+
+  return points;
 };
 
 /**

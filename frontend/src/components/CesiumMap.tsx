@@ -31,6 +31,7 @@ import {
   Cesium3DTileset,
   Cesium3DTileStyle,
   HeightReference,
+  VerticalOrigin,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMissionStore, waypointKey } from '../stores/mission-store';
@@ -45,7 +46,9 @@ import {
 import type { Layer } from '../stores/mission-store';
 import {
   DEFAULT_PANEL_STYLE,
+  computeBarcodePoints,
   decodePanelCorners,
+  formatInstallationDirection,
   type BarcodeScanData,
   type PanelStyle,
 } from '../lib/barcode-panels';
@@ -65,8 +68,57 @@ interface PanelLayer {
   corners: string;
   index: PanelTileIndex;
   styleKey: string;
+  /** Label settings and table detection the barcode points were computed for. */
+  pointsKey: string;
+  points: Float64Array | null;
   layer: ImageryLayer;
 }
+
+/**
+ * A text badge painted into one canvas, for use as a single billboard.
+ *
+ * A Cesium label with a background is several billboards (one per glyph plus
+ * the background). Clamped to terrain they are placed one by one, and over
+ * sloped world terrain the text and its background landed at different heights
+ * and drifted apart in tilted views. One billboard cannot come apart.
+ */
+const createBadgeCanvas = (lines: string[], background: string) => {
+  const ratio = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+  const font = 'bold 13px sans-serif';
+  const lineHeight = 17;
+  const paddingX = 9;
+  const paddingY = 5;
+
+  const measure = document.createElement('canvas').getContext('2d');
+  let textWidth = 0;
+  if (measure) {
+    measure.font = font;
+    textWidth = lines.reduce((widest, line) => Math.max(widest, measure.measureText(line).width), 0);
+  }
+
+  const width = Math.ceil(textWidth + paddingX * 2);
+  const height = lines.length * lineHeight + paddingY * 2;
+  const canvas = document.createElement('canvas');
+  // Drawn at device resolution, displayed at CSS size: stays sharp on high-DPI screens.
+  canvas.width = Math.ceil(width * ratio);
+  canvas.height = Math.ceil(height * ratio);
+
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.scale(ratio, ratio);
+    ctx.fillStyle = background;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, width, height, 5);
+    ctx.fill();
+    ctx.font = font;
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    lines.forEach((line, index) => ctx.fillText(line, width / 2, paddingY + lineHeight * (index + 0.5)));
+  }
+
+  return { canvas, width, height };
+};
 
 export const CesiumMap = () => {
   const viewerRef = useRef<Viewer | null>(null);
@@ -160,6 +212,7 @@ export const CesiumMap = () => {
   const setDrawWaypointMode = useMissionStore((state) => state.setDrawWaypointMode);
   const layers = useMissionStore((state) => state.layers);
   const cesiumToken = useMissionStore((state) => state.cesiumToken);
+  const installationLineMissionId = useMissionStore((state) => state.installationLineMissionId);
   const activeMissionIdForKmlEdit = kmlEditMode ? activeMissionId : null;
 
   const getLonLatFromScreenPosition = (viewer: Viewer, position: Cartesian2) => {
@@ -1018,6 +1071,122 @@ export const CesiumMap = () => {
     // terrainReadyVersion re-samples the AOI border after a terrain provider swap.
   }, [missions, activeMissionIdForKmlEdit, kmlEditMode, terrainReadyVersion]);
 
+  // Only the shown mission's structure drives the installation line, so edits to
+  // other missions or to the panel style do not redraw it.
+  const installationLineMission = installationLineMissionId
+    ? missions.find((item) => item.id === installationLineMissionId)
+    : undefined;
+  const installationLineStructure =
+    installationLineMission?.missionType === 'barcode' && installationLineMission.visible
+      ? installationLineMission.barcode?.structure ?? null
+      : null;
+
+  // Barcode Scan: the row the installation direction was measured on, when asked for
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+
+    const entityIds = [
+      'installation-line-casing',
+      'installation-line',
+      'installation-line-start',
+      'installation-line-end',
+      'installation-line-label',
+    ];
+    entityIds.forEach((id) => viewer.entities.removeById(id));
+
+    const structure = installationLineStructure;
+    const row = structure?.installationRow;
+    if (!structure || !row?.start || !row.end) {
+      viewer.scene.requestRender();
+      return;
+    }
+
+    const start = Cartesian3.fromDegrees(row.start[0], row.start[1]);
+    const end = Cartesian3.fromDegrees(row.end[0], row.end[1]);
+    const lineColor = Color.fromCssColorString('#ff2d55');
+
+    // White casing under a red core keeps the line readable over cyan panels and imagery.
+    viewer.entities.add({
+      id: 'installation-line-casing',
+      polyline: { positions: [start, end], width: 7, material: Color.WHITE, clampToGround: true, zIndex: 1 },
+    });
+    viewer.entities.add({
+      id: 'installation-line',
+      polyline: { positions: [start, end], width: 3, material: lineColor, clampToGround: true, zIndex: 2 },
+    });
+
+    viewer.scene.requestRender();
+
+    // End dots and badge are placed at the sampled terrain height. Clamped to the
+    // ground instead, they stayed at the ellipsoid on world terrain — hundreds of
+    // metres below a high site such as the Atacama — so tilted views showed them
+    // shifted away from the draped line. Sampled again when the terrain changes.
+    const MARKER_LIFT_M = 1;
+    const midLon = (row.start[0] + row.end[0]) / 2;
+    const midLat = (row.start[1] + row.end[1]) / 2;
+    let cancelled = false;
+
+    sampleTerrainForWaypoints(
+      viewer,
+      [
+        [row.start[0], row.start[1], 0],
+        [row.end[0], row.end[1], 0],
+        [midLon, midLat, 0],
+      ],
+      MARKER_LIFT_M
+    )
+      .then(([startPoint, endPoint, midPoint]) => {
+        if (cancelled || viewer.isDestroyed()) return;
+
+        const endpoints: [string, number[]][] = [
+          ['installation-line-start', startPoint],
+          ['installation-line-end', endPoint],
+        ];
+        endpoints.forEach(([id, point]) => {
+          viewer.entities.removeById(id);
+          viewer.entities.add({
+            id,
+            position: Cartesian3.fromDegrees(point[0], point[1], point[2]),
+            point: {
+              pixelSize: 10,
+              color: lineColor,
+              outlineColor: Color.WHITE,
+              outlineWidth: 2,
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+          });
+        });
+
+        const badge = createBadgeCanvas(
+          [formatInstallationDirection(structure.installationBearing), `${row.modules} modules · ${row.lengthM.toFixed(1)} m`],
+          'rgba(255, 45, 85, 0.92)'
+        );
+        viewer.entities.removeById('installation-line-label');
+        viewer.entities.add({
+          id: 'installation-line-label',
+          position: Cartesian3.fromDegrees(midPoint[0], midPoint[1], midPoint[2]),
+          billboard: {
+            image: badge.canvas,
+            width: badge.width,
+            height: badge.height,
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            pixelOffset: new Cartesian2(0, -12),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+
+        viewer.scene.requestRender();
+      })
+      .catch((error) => {
+        console.warn('[InstallationLine] Could not place the markers on the terrain:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [installationLineStructure, viewerInitVersion, terrainReadyVersion]);
+
   // Barcode Scan: draw each mission's solar panels
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -1036,9 +1205,14 @@ export const CesiumMap = () => {
       if (imageryLayers.contains(entry.layer)) imageryLayers.remove(entry.layer, true);
     };
 
-    const addPanelLayer = (missionId: string, index: PanelTileIndex, style: PanelStyle) => {
+    const addPanelLayer = (
+      missionId: string,
+      index: PanelTileIndex,
+      style: PanelStyle,
+      points: Float64Array | null
+    ) => {
       const layer = imageryLayers.addImageryProvider(
-        new BarcodePanelImageryProvider(index, style) as unknown as ImageryProvider
+        new BarcodePanelImageryProvider(index, style, points) as unknown as ImageryProvider
       );
       // @ts-expect-error - marker property read by enforceImageryOrder
       layer._customLayerId = `panels-${missionId}`;
@@ -1066,22 +1240,50 @@ export const CesiumMap = () => {
     barcodeMissions.forEach(({ data, visible }, missionId) => {
       const style: PanelStyle = { ...DEFAULT_PANEL_STYLE, ...data.style };
       const styleKey = JSON.stringify(style);
+      // Barcode points follow the label settings and the detected tables and rows.
+      const pointsKey = JSON.stringify([
+        data.label ?? null,
+        data.structure?.tableGapM ?? null,
+        data.structure?.installationBearing ?? null,
+      ]);
+      const pointsFor = (index: PanelTileIndex) =>
+        data.label && data.structure
+          ? computeBarcodePoints(index.corners, {
+              tableGapM: data.structure.tableGapM,
+              installationBearing: data.structure.installationBearing,
+              settings: data.label,
+            })
+          : null;
+
       let entry = layers.get(missionId);
 
       if (!entry) {
         const index = new PanelTileIndex(decodePanelCorners(data.corners), data.bounds, data.panelSize);
-        entry = { corners: data.corners, index, styleKey, layer: addPanelLayer(missionId, index, style) };
+        const points = pointsFor(index);
+        entry = {
+          corners: data.corners,
+          index,
+          styleKey,
+          pointsKey,
+          points,
+          layer: addPanelLayer(missionId, index, style, points),
+        };
         layers.set(missionId, entry);
         changed = true;
-      } else if (entry.styleKey !== styleKey) {
-        // Tiles are cached per layer, so a new style needs a fresh layer.
+      } else if (entry.styleKey !== styleKey || entry.pointsKey !== pointsKey) {
+        if (entry.pointsKey !== pointsKey) {
+          entry.points = pointsFor(entry.index);
+          entry.pointsKey = pointsKey;
+        }
+        // Tiles are cached per layer, so a new style or new points need a fresh layer.
         drop(entry);
         entry.styleKey = styleKey;
-        entry.layer = addPanelLayer(missionId, entry.index, style);
+        entry.layer = addPanelLayer(missionId, entry.index, style, entry.points);
         changed = true;
       }
 
-      entry.layer.show = visible && (style.outlineEnabled || style.fillEnabled);
+      entry.layer.show =
+        visible && (style.outlineEnabled || style.fillEnabled || (style.barcodeEnabled && !!entry.points));
     });
 
     if (changed) enforceImageryOrder(viewer);

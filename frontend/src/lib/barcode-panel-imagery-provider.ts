@@ -11,7 +11,7 @@
  */
 
 import { Credit, Event as CesiumEvent, GeographicTilingScheme, Math as CesiumMath, Rectangle } from 'cesium';
-import type { PanelBounds, PanelSize, PanelStyle } from './barcode-panels';
+import type { BarcodeSymbol, PanelBounds, PanelSize, PanelStyle } from './barcode-panels';
 
 const TILE_SIZE = 256;
 /** Stop refining once one tile pixel covers this much ground. */
@@ -21,9 +21,81 @@ const MAX_LEVEL_CAP = 24;
 const GRID_CELL_DEG = 0.0001;
 /** Narrower than this on screen, a panel is drawn as a solid block: an outline would only be noise. */
 const OUTLINE_MIN_PIXELS = 3;
+/** Narrower than this on screen, barcode points would just smear the rows. */
+const POINT_MIN_PANEL_PIXELS = 5;
 /** Extra query margin for strokes that spill over a tile edge. */
 const STROKE_MARGIN_PIXELS = 8;
 const METERS_PER_DEGREE_LAT = 110574;
+
+/**
+ * Add one barcode symbol to the current path, sized in on-screen pixels.
+ * `stretchX` undoes the east–west squeeze a geographic tile gets when draped
+ * on the globe; `direction` is the screen direction of the module's short side.
+ */
+const traceBarcodeSymbol = (
+  ctx: CanvasRenderingContext2D,
+  symbol: BarcodeSymbol,
+  px: number,
+  py: number,
+  size: number,
+  stretchX: number,
+  direction: [number, number]
+) => {
+  const half = size / 2;
+  const point = (dx: number, dy: number, first = false) => {
+    const x = px + dx * stretchX;
+    const y = py + dy;
+    if (first) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  };
+
+  switch (symbol) {
+    case 'circle':
+      ctx.moveTo(px + half * stretchX, py);
+      ctx.ellipse(px, py, half * stretchX, half, 0, 0, Math.PI * 2);
+      return;
+    case 'square':
+      point(-half, -half, true);
+      point(half, -half);
+      point(half, half);
+      point(-half, half);
+      ctx.closePath();
+      return;
+    case 'label': {
+      // The sticker is 2:1 with its long side along the module's short edge.
+      const [dx, dy] = direction;
+      const along = half * 1.2;
+      const across = half * 0.6;
+      point(dx * along - dy * across, dy * along + dx * across, true);
+      point(dx * along + dy * across, dy * along - dx * across);
+      point(-dx * along + dy * across, -dy * along - dx * across);
+      point(-dx * along - dy * across, -dy * along + dx * across);
+      ctx.closePath();
+      return;
+    }
+    default: {
+      const reach = half * 1.25;
+      point(0, -reach, true);
+      point(reach, 0);
+      point(0, reach);
+      point(-reach, 0);
+      ctx.closePath();
+    }
+  }
+};
+
+/** Screen direction (x right, y down) of a module's short side, from its corners. */
+const shortSideDirection = (corners: Float64Array, offset: number, cosLat: number): [number, number] => {
+  const edge0X = (corners[offset + 2] - corners[offset]) * cosLat;
+  const edge0Y = corners[offset + 3] - corners[offset + 1];
+  const edge1X = (corners[offset + 4] - corners[offset + 2]) * cosLat;
+  const edge1Y = corners[offset + 5] - corners[offset + 3];
+  const useFirst = Math.hypot(edge0X, edge0Y) <= Math.hypot(edge1X, edge1Y);
+  const x = useFirst ? edge0X : edge1X;
+  const y = useFirst ? edge0Y : edge1Y;
+  const length = Math.hypot(x, y) || 1;
+  return [x / length, -y / length];
+};
 
 /**
  * Panels bucketed by centre into a regular lon/lat grid, so a tile only visits
@@ -126,6 +198,8 @@ export class PanelTileIndex {
 export class BarcodePanelImageryProvider {
   private readonly index: PanelTileIndex;
   private readonly style: PanelStyle;
+  /** lon,lat of each panel's barcode label, indexed like the panels; NaN where unknown. */
+  private readonly points: Float64Array | null;
   private readonly _tilingScheme = new GeographicTilingScheme();
   private readonly _rectangle: Rectangle;
   private readonly _errorEvent = new CesiumEvent();
@@ -133,9 +207,10 @@ export class BarcodePanelImageryProvider {
   private readonly _minimumLevel: number;
   private readonly _maximumLevel: number;
 
-  constructor(index: PanelTileIndex, style: PanelStyle) {
+  constructor(index: PanelTileIndex, style: PanelStyle, points: Float64Array | null = null) {
     this.index = index;
     this.style = style;
+    this.points = points;
 
     const { west, south, east, north } = index.bounds;
     this._rectangle = Rectangle.fromDegrees(
@@ -191,7 +266,8 @@ export class BarcodePanelImageryProvider {
     canvas.height = TILE_SIZE;
 
     const { style, index } = this;
-    if (!style.outlineEnabled && !style.fillEnabled) return canvas;
+    const drawPoints = style.barcodeEnabled && !!this.points;
+    if (!style.outlineEnabled && !style.fillEnabled && !drawPoints) return canvas;
     const ctx = canvas.getContext('2d');
     if (!ctx) return canvas;
 
@@ -255,6 +331,35 @@ export class BarcodePanelImageryProvider {
       // A stroke wider than a third of the panel would swallow it at medium zoom.
       ctx.lineWidth = Math.max(1, Math.min(style.outlineWidth, panelPixels / 3));
       ctx.lineJoin = 'miter';
+      ctx.stroke();
+    }
+
+    const points = this.points;
+    if (drawPoints && points && panelPixels >= POINT_MIN_PANEL_PIXELS) {
+      // A geographic tile is squeezed east–west by cos(latitude) on the globe
+      // (0.62 at 51.5° N), so symbol x offsets are stretched back to stay true.
+      const cosLat = Math.max(0.05, Math.cos(CesiumMath.toRadians((north + south) / 2)));
+      const stretchX = 1 / cosLat;
+      const size = Math.max(2, Math.min(style.barcodeSize, panelPixels));
+      const symbol = style.barcodeSymbol ?? 'diamond';
+      const upright: [number, number] = [1, 0];
+
+      // Same single-path approach: one fill and one thin dark rim for every symbol in the tile.
+      ctx.beginPath();
+      index.forEachNear(west - marginLon, south - marginLat, east + marginLon, north + marginLat, (panel) => {
+        const lon = points[panel * 2];
+        const lat = points[panel * 2 + 1];
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
+        const px = (lon - west) * scaleX;
+        const py = (north - lat) * scaleY;
+        const direction = symbol === 'label' ? shortSideDirection(corners, panel * 8, cosLat) : upright;
+        traceBarcodeSymbol(ctx, symbol, px, py, size, stretchX, direction);
+      });
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = style.barcodeColor;
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
       ctx.stroke();
     }
 
