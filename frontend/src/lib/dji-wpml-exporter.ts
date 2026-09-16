@@ -5,9 +5,9 @@
  */
 
 import JSZip from 'jszip';
-import type { FlightParameters, Mission, WaypointOverride } from '../stores/mission-store';
+import type { FlightParameters, Mission, WaypointKind, WaypointOverride } from '../stores/mission-store';
 import { waypointKey } from '../stores/mission-store';
-import { DEFAULT_SCAN_SPEED_MPS } from './barcode-panels';
+import { DEFAULT_SCAN_HOVER_SECONDS, DEFAULT_SCAN_SPEED_MPS } from './barcode-panels';
 import {
   buildActionXml,
   getActionDef,
@@ -29,7 +29,23 @@ interface WaypointData {
   alt: number;
   /** Per-waypoint settings that win over the mission-wide FlightParameters. */
   override?: WaypointOverride;
+  /** Barcode Scan routes only: what the point is for. */
+  kind?: WaypointKind;
 }
+
+/**
+ * What the point is for, as plain KML so DJI Pilot 2 keeps it and ignores it,
+ * while our own tools can tell a barcode from a point that is only flown.
+ */
+const buildPointTypeXml = (kind: WaypointKind | undefined): string =>
+  kind
+    ? `
+      <ExtendedData>
+        <Data name="pointType">
+          <value>${kind}</value>
+        </Data>
+      </ExtendedData>`
+    : '';
 
 /** Mutable counter so every action group in the KMZ gets a unique id. */
 interface GroupIdCounter {
@@ -82,7 +98,7 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
   // Get all waypoints from all flight lines
   const allWaypoints: WaypointData[] = [];
   mission.flightLines.forEach(line => {
-    line.coordinates.forEach(coord => {
+    line.coordinates.forEach((coord, pointIndex) => {
       const lon = Number(coord[0]);
       const lat = Number(coord[1]);
       const rawAlt = Number(coord[2]);
@@ -92,7 +108,13 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
         return;
       }
 
-      allWaypoints.push({ lon, lat, alt, override: line.waypointOverrides?.[waypointKey(lon, lat)] });
+      allWaypoints.push({
+        lon,
+        lat,
+        alt,
+        override: line.waypointOverrides?.[waypointKey(lon, lat)],
+        kind: line.pointKinds?.[pointIndex],
+      });
     });
   });
 
@@ -121,32 +143,32 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
       : normalizedFirstAltitude + (waypoint.alt - firstWaypointAltitude),
   }));
 
-  // A barcode scan flies at its own speed and a fixed heading, by default along
-  // the panel rows, and stops on every waypoint: the points sit centimetres
-  // above the panels and include straight climbs and descents, where a
-  // coordinated turn would cut the corner.
+  // A barcode scan flies at its own speed, with Aircraft Yaw on Manual at the
+  // heading of the panel rows, and takes its waypoint actions from the scan
+  // settings. Those actions run on the barcode points only (see kind).
+  const scan = mission.barcode?.scan;
   const exportMission: Mission = isBarcode
     ? {
         ...mission,
         parameters: {
           ...mission.parameters,
-          speed: mission.barcode?.scan?.flightSpeedMps ?? DEFAULT_SCAN_SPEED_MPS,
-          globalHeadingMode: 'smoothTransition',
-          droneYaw:
-            mission.barcode?.scan?.droneYawDeg ??
-            mission.barcode?.structure?.installationBearing ??
-            mission.parameters.droneYaw,
+          speed: scan?.flightSpeedMps ?? DEFAULT_SCAN_SPEED_MPS,
+          globalHeadingMode: 'manually',
+          droneYaw: scan?.droneYawDeg ?? mission.barcode?.structure?.installationBearing ?? mission.parameters.droneYaw,
+          waypointHoverEnabled: scan?.hoverEnabled === true,
+          waypointHoverTime: scan?.hoverSeconds ?? DEFAULT_SCAN_HOVER_SECONDS,
+          waypointTakePhoto: scan?.takePhotoEnabled === true,
+          waypointRecordVideo: false,
         },
       }
     : mission;
-  const stopAtWaypoints = isBarcode;
 
   // DJI Pilot 2 expects files inside the wpmz folder in KMZ
-  const waylinesContent = generateWaylinesWPML(exportMission, normalizedWaypoints, stopAtWaypoints);
+  const waylinesContent = generateWaylinesWPML(exportMission, normalizedWaypoints);
   zip.file('wpmz/waylines.wpml', waylinesContent);
 
   // Create template.kml (for editing)
-  const templateContent = generateTemplateKML(exportMission, normalizedWaypoints, stopAtWaypoints);
+  const templateContent = generateTemplateKML(exportMission, normalizedWaypoints);
   zip.file('wpmz/template.kml', templateContent);
 
   // Generate KMZ file
@@ -161,7 +183,7 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
 /**
  * Generate waylines.wpml content (executable waypoint file)
  */
-const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[], stopAtWaypoints = false): string => {
+const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
   const finishAction = parameters.finishAction ?? 'goHome';
   const takeOffSecurityHeight = formatWpmlFloat(
@@ -213,7 +235,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[], stopA
   // Add waypoints. Action group ids must be unique across the whole file.
   const groupIds: GroupIdCounter = { next: 0 };
   waypoints.forEach((wp, index) => {
-    xml += generateWaypointXML(wp, index, parameters, waypoints.length, groupIds, stopAtWaypoints);
+    xml += generateWaypointXML(wp, index, parameters, waypoints.length, groupIds);
   });
 
   xml += `  </Folder>
@@ -226,7 +248,7 @@ const generateWaylinesWPML = (mission: Mission, waypoints: WaypointData[], stopA
 /**
  * Generate template.kml content (for user editing)
  */
-const generateTemplateKML = (mission: Mission, waypoints: WaypointData[], stopAtWaypoints = false): string => {
+const generateTemplateKML = (mission: Mission, waypoints: WaypointData[]): string => {
   const { parameters, drone, camera } = mission;
   const finishAction = parameters.finishAction ?? 'goHome';
   const takeOffSecurityHeight = formatWpmlFloat(
@@ -302,14 +324,14 @@ const generateTemplateKML = (mission: Mission, waypoints: WaypointData[], stopAt
       <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
       <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
     </wpml:globalWaypointHeadingParam>
-    <wpml:globalWaypointTurnMode>${stopAtWaypoints ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn'}</wpml:globalWaypointTurnMode>
+    <wpml:globalWaypointTurnMode>coordinateTurn</wpml:globalWaypointTurnMode>
     <wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>
 `;
 
   // Add waypoints with their action groups
   const groupIds: GroupIdCounter = { next: 0 };
   waypoints.forEach((wp, index) => {
-    xml += generateTemplateWaypointXML(wp, index, parameters, waypoints.length, groupIds, stopAtWaypoints);
+    xml += generateTemplateWaypointXML(wp, index, parameters, waypoints.length, groupIds);
   });
 
   // Pilot 2 writes payloadParam after the placemarks.
@@ -436,7 +458,7 @@ const buildGlobalActionXml = (
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>hover</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
-            <wpml:hoverTime>${Math.max(1, Number(parameters.waypointHoverTime) || 1)}</wpml:hoverTime>
+            <wpml:hoverTime>${formatWpmlFloat(Math.max(0.1, Number(parameters.waypointHoverTime) || 1), 1, 1)}</wpml:hoverTime>
           </wpml:actionActuatorFuncParam>
         </wpml:action>`);
   }
@@ -453,12 +475,20 @@ const buildGlobalActionXml = (
   }
 
   if (parameters.waypointTakePhoto === true) {
+    // A barcode is read from the wide camera, so the photo must not follow the
+    // route's global lens setting.
+    const lensTags =
+      waypoint.kind === 'barcode'
+        ? `
+            <wpml:useGlobalPayloadLensIndex>0</wpml:useGlobalPayloadLensIndex>
+            <wpml:payloadLensIndex>wide</wpml:payloadLensIndex>`
+        : '';
     xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>
           <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
           <wpml:actionActuatorFuncParam>
             <wpml:fileSuffix>point${index}</wpml:fileSuffix>
-            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+            <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>${lensTags}
           </wpml:actionActuatorFuncParam>
         </wpml:action>`);
   }
@@ -491,7 +521,10 @@ const buildActionGroupsXml = (
   groupIds: GroupIdCounter
 ): string => {
   const override = waypoint.override;
-  const useGlobalActions = override?.useGlobalActions !== false;
+  // On a Barcode Scan route the mission-wide actions belong to the barcode
+  // points; the aircraft only passes the transit points.
+  const isActionPoint = waypoint.kind === undefined || waypoint.kind === 'barcode';
+  const useGlobalActions = override?.useGlobalActions !== false && isActionPoint;
   const customActions = override?.actions ?? [];
 
   const reachPointXml: string[] = [];
@@ -582,8 +615,7 @@ const generateWaypointXML = (
   index: number,
   parameters: FlightParameters,
   totalWaypoints: number,
-  groupIds: GroupIdCounter,
-  stopAtWaypoints = false
+  groupIds: GroupIdCounter
 ): string => {
   const override = waypoint.override;
   const { headingMode, headingAngle } = resolveWaypointHeading(parameters, override);
@@ -597,9 +629,9 @@ const generateWaypointXML = (
    * DJI Pilot 2 converts those two points to a straight-in stop when it generates
    * waylines.wpml, even though template.kml keeps coordinateTurn everywhere.
    */
-  const stopsHere = stopAtWaypoints || index === 0 || index === totalWaypoints - 1;
-  const turnMode = stopsHere ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
-  const dampingDist = stopsHere
+  const isRouteEndpoint = index === 0 || index === totalWaypoints - 1;
+  const turnMode = isRouteEndpoint ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
+  const dampingDist = isRouteEndpoint
     ? '0'
     : formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2, 0.2, 2);
 
@@ -634,7 +666,7 @@ const generateWaypointXML = (
         parameters,
         totalWaypoints,
         groupIds
-      )}
+      )}${buildPointTypeXml(waypoint.kind)}
     </Placemark>
 `;
 };
@@ -647,17 +679,14 @@ const generateTemplateWaypointXML = (
   index: number,
   parameters: FlightParameters,
   totalWaypoints: number,
-  groupIds: GroupIdCounter,
-  stopAtWaypoints = false
+  groupIds: GroupIdCounter
 ): string => {
   const override = waypoint.override;
   const { headingMode, headingAngle } = resolveWaypointHeading(parameters, override);
   const gimbal = resolveWaypointGimbal(parameters, override);
   const speedValue = formatWpmlFloat(override?.speed ?? parameters.speed, 8, 2);
-  const turnMode = stopAtWaypoints ? 'toPointAndStopWithDiscontinuityCurvature' : 'coordinateTurn';
-  const dampingDist = stopAtWaypoints
-    ? '0'
-    : formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2, 0.2, 2);
+  const turnMode = 'coordinateTurn';
+  const dampingDist = formatWpmlFloat(override?.turnDistance ?? parameters.waypointTurnDistance ?? 0.2, 0.2, 2);
 
   // DJI requires a per-point pitch only when the route uses "For Each Waypoint".
   const gimbalPitchAngleTag =
@@ -691,7 +720,7 @@ const generateTemplateWaypointXML = (
         parameters,
         totalWaypoints,
         groupIds
-      )}
+      )}${buildPointTypeXml(waypoint.kind)}
     </Placemark>
 `;
 };
@@ -725,11 +754,19 @@ const resolveDroneInfo = (droneName: string): { droneEnumValue: number; droneSub
   if (normalized.includes('mavic 3m') || /\bm3m\b/.test(normalized)) {
     return { droneEnumValue: 77, droneSubEnumValue: 2 };
   }
-  if (
-    normalized.includes('matrice 4e') ||
-    /\bm4e\b/.test(normalized)
-  ) {
-    return { droneEnumValue: 77, droneSubEnumValue: 0 };
+  // Matrice 4 series has its own aircraft code; with the Mavic 3E code (77)
+  // DJI Pilot 2 shows the route as a Mavic 3E mission and refuses to fly it.
+  if (normalized.includes('matrice 4td') || /\bm4td\b/.test(normalized)) {
+    return { droneEnumValue: 100, droneSubEnumValue: 1 };
+  }
+  if (normalized.includes('matrice 4d') || /\bm4d\b/.test(normalized)) {
+    return { droneEnumValue: 100, droneSubEnumValue: 0 };
+  }
+  if (normalized.includes('matrice 4t') || /\bm4t\b/.test(normalized)) {
+    return { droneEnumValue: 99, droneSubEnumValue: 1 };
+  }
+  if (normalized.includes('matrice 4e') || /\bm4e\b/.test(normalized)) {
+    return { droneEnumValue: 99, droneSubEnumValue: 0 };
   }
 
   if (
@@ -782,6 +819,20 @@ const resolvePayloadInfo = (
     return { payloadEnumValue: 80, payloadSubEnumValue: 0 };
   }
 
+  // Matrice 4 series cameras, before the generic wide/zoom rule below.
+  if (normalizedId.startsWith('m4td') || normalizedName.includes('matrice 4td')) {
+    return { payloadEnumValue: 99, payloadSubEnumValue: 0 };
+  }
+  if (normalizedId.startsWith('m4d') || normalizedName.includes('matrice 4d')) {
+    return { payloadEnumValue: 98, payloadSubEnumValue: 0 };
+  }
+  if (normalizedId.startsWith('m4t') || normalizedName.includes('matrice 4t')) {
+    return { payloadEnumValue: 89, payloadSubEnumValue: 0 };
+  }
+  if (normalizedId.startsWith('m4e') || normalizedName.includes('matrice 4e')) {
+    return { payloadEnumValue: 88, payloadSubEnumValue: 0 };
+  }
+
   if (normalizedName.includes('m3m') || normalizedName.includes('mavic 3m')) {
     return { payloadEnumValue: 68, payloadSubEnumValue: 0 };
   }
@@ -812,6 +863,14 @@ const resolvePayloadInfo = (
 
   if (droneEnumValue === 91) {
     return { payloadEnumValue: 80, payloadSubEnumValue: 0 };
+  }
+
+  if (droneEnumValue === 99) {
+    return { payloadEnumValue: 88, payloadSubEnumValue: 0 };
+  }
+
+  if (droneEnumValue === 100) {
+    return { payloadEnumValue: 98, payloadSubEnumValue: 0 };
   }
 
   return { payloadEnumValue: 66, payloadSubEnumValue: 0 };

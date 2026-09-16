@@ -244,6 +244,8 @@ export const DEFAULT_SAFE_JUMP_M = 2;
 export const DEFAULT_SCAN_ALTITUDE_M = 0.8;
 /** Default flight speed for barcode scan flights, m/s (a decimal value). */
 export const DEFAULT_SCAN_SPEED_MPS = 1;
+/** Default hover time at a barcode point, seconds (a decimal value). */
+export const DEFAULT_SCAN_HOVER_SECONDS = 1;
 
 /**
  * Scan flight settings of a Barcode Scan mission. Every field is optional:
@@ -258,6 +260,12 @@ export interface BarcodeScanSettings {
   flightSpeedMps?: number;
   /** Aircraft heading during the scan, degrees clockwise from north; defaults to the installation direction. */
   droneYawDeg?: number;
+  /** Take a photo with the wide camera at every barcode point. */
+  takePhotoEnabled?: boolean;
+  /** Hover at every barcode point before the photo. */
+  hoverEnabled?: boolean;
+  /** Hover time at a barcode point, seconds. */
+  hoverSeconds?: number;
   /** Table numbers to scan, in flight order (the order they were picked). */
   tables?: number[];
   /** Corner of every table where its scan starts, as seen on a north-up map. */

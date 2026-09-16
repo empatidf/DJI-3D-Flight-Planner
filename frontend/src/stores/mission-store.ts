@@ -68,10 +68,18 @@ export interface WaypointOverride {
   note?: string;
 }
 
+/**
+ * What a waypoint is for. Barcode Scan routes mark every point, so an app
+ * reading the exported KMZ can tell a barcode from a pure flying point.
+ */
+export type WaypointKind = 'barcode' | 'transit';
+
 export interface FlightLine {
   id: string;
   coordinates: number[][]; // waypoints [lon, lat, alt][]
   photoPoints: number[][]; // photo capture points
+  /** Kind of every waypoint, same order as `coordinates`; Barcode Scan routes only. */
+  pointKinds?: WaypointKind[];
   originalCoordinates?: number[][]; // pre-terrain-follow snapshot, used to revert
   /**
    * Per-waypoint overrides keyed by `waypointKey(lon, lat)` rather than by index,

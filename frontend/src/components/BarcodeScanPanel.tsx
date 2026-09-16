@@ -16,6 +16,7 @@ import {
   DEFAULT_PANEL_STYLE,
   DEFAULT_SAFE_JUMP_M,
   DEFAULT_SCAN_ALTITUDE_M,
+  DEFAULT_SCAN_HOVER_SECONDS,
   DEFAULT_SCAN_SPEED_MPS,
   DEFAULT_SCAN_START_CORNER,
   MAX_TABLE_GAP_M,
@@ -70,6 +71,8 @@ const SCAN_SPEED_MIN_MPS = 0.1;
 const SCAN_SPEED_MAX_MPS = 5;
 const DRONE_YAW_MIN_DEG = 0;
 const DRONE_YAW_MAX_DEG = 360;
+const HOVER_MIN_S = 0.1;
+const HOVER_MAX_S = 5;
 const STEPS_DOWN = [-10, -1];
 const STEPS_UP = [1, 10];
 
@@ -397,6 +400,9 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
   const flightSpeed = barcode?.scan?.flightSpeedMps ?? DEFAULT_SCAN_SPEED_MPS;
   const defaultDroneYaw = barcode?.structure?.installationBearing ?? 0;
   const droneYaw = barcode?.scan?.droneYawDeg ?? defaultDroneYaw;
+  const takesPhoto = barcode?.scan?.takePhotoEnabled === true;
+  const hovers = barcode?.scan?.hoverEnabled === true;
+  const hoverSeconds = barcode?.scan?.hoverSeconds ?? DEFAULT_SCAN_HOVER_SECONDS;
   const [tableGapInput, setTableGapInput] = useState(() =>
     (barcode?.structure?.tableGapM ?? barcode?.panelSize.width ?? 1).toFixed(2)
   );
@@ -1196,6 +1202,73 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
               </button>
             </div>
           </div>
+
+          {barcode && (
+            <div className="bs-cell">
+              <span className="bs-cell-label" title="Take a photo with the wide camera at every barcode point.">
+                Take photo
+              </span>
+              <div className="bs-cell-line">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={takesPhoto}
+                  className={`bs-switch bs-switch-bare${takesPhoto ? ' is-on' : ''}`}
+                  onClick={() => updateScan({ takePhotoEnabled: !takesPhoto })}
+                  title="Take a photo with the wide camera at every barcode point."
+                >
+                  <span className="bs-switch-track" aria-hidden="true">
+                    <span className="bs-switch-knob" />
+                  </span>
+                  <span className="bs-switch-text">{takesPhoto ? 'On' : 'Off'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {barcode && (
+            <div className="bs-cell">
+              <span
+                className="bs-cell-label"
+                title={`Hold at every barcode point before the photo (${HOVER_MIN_S}–${HOVER_MAX_S} s).`}
+              >
+                Hover at waypoint
+              </span>
+              <div className="bs-cell-line">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={hovers}
+                  className={`bs-switch bs-switch-bare${hovers ? ' is-on' : ''}`}
+                  onClick={() => updateScan({ hoverEnabled: !hovers })}
+                  title={`Hold at every barcode point before the photo (${HOVER_MIN_S}–${HOVER_MAX_S} s).`}
+                >
+                  <span className="bs-switch-track" aria-hidden="true">
+                    <span className="bs-switch-knob" />
+                  </span>
+                  <span className="bs-switch-text">{hovers ? 'On' : 'Off'}</span>
+                </button>
+                <span className={`bs-number bs-number-sm bs-push${hovers ? '' : ' is-disabled'}`}>
+                  <input
+                    type="number"
+                    min={HOVER_MIN_S}
+                    max={HOVER_MAX_S}
+                    step="0.1"
+                    value={hoverSeconds}
+                    disabled={!hovers}
+                    aria-label="Hover time in seconds"
+                    onChange={(e) => {
+                      const seconds = Number(e.target.value);
+                      if (!Number.isFinite(seconds)) return;
+                      const clamped = Math.min(HOVER_MAX_S, Math.max(HOVER_MIN_S, Math.round(seconds * 10) / 10));
+                      updateScan({ hoverSeconds: clamped });
+                    }}
+                  />
+                  <span className="bs-unit">s</span>
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         {hasPanels && barcode && structure && (

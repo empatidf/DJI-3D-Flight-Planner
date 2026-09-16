@@ -791,6 +791,40 @@
   min-height: 24px;
 }
 
+.bs-switch-bare {
+  margin-left: 0;
+  padding: 2px 4px 2px 0;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.bs-switch-bare:hover {
+  background: none;
+}
+
+.bs-switch-text {
+  color: var(--bs-muted);
+}
+
+.bs-switch-bare.is-on .bs-switch-text {
+  color: var(--bs-accent);
+  font-weight: 700;
+}
+
+.bs-number-sm {
+  height: 22px;
+}
+
+.bs-number-sm input {
+  width: 42px;
+  padding: 0 2px 0 6px;
+  font-size: 11.5px;
+}
+
+.bs-number.is-disabled {
+  opacity: 0.45;
+}
+
 .bs-cell .bs-action {
   height: 22px;
   padding: 0 8px;

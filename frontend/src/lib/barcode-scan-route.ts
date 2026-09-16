@@ -8,7 +8,7 @@
  * altitude is what they are measured from when exported.
  */
 
-import { useMissionStore, type Mission } from '../stores/mission-store';
+import { useMissionStore, type Mission, type WaypointKind } from '../stores/mission-store';
 import {
   DEFAULT_SAFE_JUMP_M,
   DEFAULT_SCAN_ALTITUDE_M,
@@ -140,12 +140,14 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
   if (barcodeRouteKey(current) !== key) throw new Error('Settings changed while the terrain was sampled. Generate again.');
 
   const coordinates: number[][] = [];
-  const push = (lon: number, lat: number, altitude: number) => {
+  const pointKinds: WaypointKind[] = [];
+  const push = (lon: number, lat: number, altitude: number, kind: WaypointKind = 'transit') => {
     const rounded = Math.round(altitude * 100) / 100;
     const last = coordinates[coordinates.length - 1];
     // A safe jump of 0 would repeat the point it starts from.
     if (last && last[0] === lon && last[1] === lat && Math.abs(last[2] - rounded) < 0.01) return;
     coordinates.push([lon, lat, rounded]);
+    pointKinds.push(kind);
   };
 
   const [takeoffLon, takeoffLat, takeoffGround] = takeoffPoint;
@@ -165,13 +167,13 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
       push(last[0], last[1], level);
       push(start[0], start[1], level);
     }
-    scan.forEach(([lon, lat, altitude]) => push(lon, lat, altitude));
+    scan.forEach(([lon, lat, altitude]) => push(lon, lat, altitude, 'barcode'));
   });
   const last = coordinates[coordinates.length - 1];
   push(last[0], last[1], last[2] + settings.safeJumpM);
 
   useMissionStore.getState().updateMission(missionId, {
-    flightLines: [{ id: BARCODE_ROUTE_LINE_ID, coordinates, photoPoints: [] }],
+    flightLines: [{ id: BARCODE_ROUTE_LINE_ID, coordinates, photoPoints: [], pointKinds }],
     barcode: { ...current.barcode, scan: { ...current.barcode.scan, routeKey: key } },
   });
 
