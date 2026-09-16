@@ -412,6 +412,26 @@
   color: var(--bs-faint);
 }
 
+/* Aircraft and payload pickers */
+.bs-select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--bs-ink);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bs-select:hover {
+  border-color: #b6d4fe;
+}
+
 /* Number with a unit, e.g. the string gap */
 .bs-number {
   display: inline-flex;

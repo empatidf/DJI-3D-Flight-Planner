@@ -322,6 +322,38 @@ export const DRONES: DroneSpec[] = [
   customSonyDrone,
 ];
 
+/**
+ * Aircraft and payloads a Barcode Scan mission can be flown with.
+ *
+ * Barcode scanning reads centimetre-sized labels from a metre above the
+ * panels, so only the combinations that were set up for it are offered.
+ */
+export const BARCODE_AIRCRAFT: { droneId: string; cameraIds: string[] }[] = [
+  { droneId: 'm4e', cameraIds: ['m4e-wide'] },
+  { droneId: 'm300-rtk', cameraIds: ['p1-35mm', 'p1-50mm'] },
+];
+
+export const barcodeDrones = (): DroneSpec[] =>
+  BARCODE_AIRCRAFT.map((entry) => DRONES.find((drone) => drone.id === entry.droneId)).filter(
+    (drone): drone is DroneSpec => !!drone
+  );
+
+/** Payloads offered for a Barcode Scan mission; empty when the aircraft is not one of them. */
+export const barcodeCameras = (droneId: string): CameraSpec[] => {
+  const entry = BARCODE_AIRCRAFT.find((item) => item.droneId === droneId);
+  const drone = DRONES.find((item) => item.id === droneId);
+  if (!entry || !drone) return [];
+  return entry.cameraIds
+    .map((cameraId) => drone.cameras.find((camera) => camera.id === cameraId))
+    .filter((camera): camera is CameraSpec => !!camera);
+};
+
+/** The aircraft a new Barcode Scan mission starts with. */
+export const defaultBarcodeAircraft = (): { drone: DroneSpec; camera: CameraSpec } => {
+  const drone = barcodeDrones()[0] ?? DRONES[0];
+  return { drone, camera: barcodeCameras(drone.id)[0] ?? drone.cameras[0] };
+};
+
 // Helper functions
 export const getDroneById = (id: string): DroneSpec | undefined => {
   return DRONES.find(drone => drone.id === id);

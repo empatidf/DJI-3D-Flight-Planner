@@ -4,7 +4,8 @@
  */
 
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
+import { createSafeJSONStorage } from '../lib/safe-json-storage';
 import type { CameraSpec, DroneSpec } from '../lib/drone-specs';
 import type { WaypointAction } from '../lib/wpml-actions';
 import type { BarcodeScanData } from '../lib/barcode-panels';
@@ -721,10 +722,14 @@ export const useMissionStore = create<MissionStore>()(
     }),
     {
       name: MISSION_STORE_KEY,
-      storage: createJSONStorage(() => localStorage),
+      storage: createSafeJSONStorage<PersistedMissionState>(MISSION_STORE_KEY),
       partialize: (state): PersistedMissionState => ({
         // Keep writing missions here until folder sync has copied them over.
-        ...(state.missionsMigrated ? {} : { missions: state.missions }),
+        // Barcode Scan layouts run to megabytes, more than localStorage holds:
+        // they only ever live in the browser cache and the project folder.
+        ...(state.missionsMigrated
+          ? {}
+          : { missions: state.missions.filter((mission) => mission.missionType !== 'barcode') }),
         missionsMigrated: state.missionsMigrated,
         activeMissionId: state.activeMissionId,
         layers: state.layers,

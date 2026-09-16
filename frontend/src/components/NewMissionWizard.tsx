@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { DRONES, matrice4eDrone } from '../lib/drone-specs';
+import { DRONES, barcodeCameras, barcodeDrones, defaultBarcodeAircraft } from '../lib/drone-specs';
 import {
   importKMLFile,
   importWaypointKMLFile,
@@ -54,13 +54,8 @@ const DEFAULT_NAMES: Record<MissionType, string> = {
   barcode: 'Barcode scan',
 };
 
-const stepsFor = (type: MissionType | null): StepKey[] =>
-  type === 'barcode' ? ['type', 'source', 'name'] : ['type', 'source', 'aircraft', 'name'];
-
-/** Barcode scanning is planned for this aircraft and camera only. */
-const BARCODE_DRONE = matrice4eDrone;
-const BARCODE_CAMERA =
-  matrice4eDrone.cameras.find((camera) => camera.id === 'm4e-wide') ?? matrice4eDrone.cameras[0];
+/** Every mission type walks the same steps; only the step's content differs. */
+const STEPS: StepKey[] = ['type', 'source', 'aircraft', 'name'];
 
 const AreaIcon = () => (
   <svg className="nmw-card-icon" viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -117,16 +112,16 @@ export const NewMissionWizard = ({ onClose }: { onClose: () => void }) => {
 
   const isArea = type === 'area';
   const isBarcode = type === 'barcode';
-  const steps = stepsFor(type);
+  const steps = STEPS;
   const stepIndex = Math.min(step, steps.length - 1);
   const currentStep = steps[stepIndex];
   const isLastStep = stepIndex === steps.length - 1;
 
-  const selectedDrone = DRONES.find((item) => item.id === droneId) ?? DRONES[0];
-  const drone = isBarcode ? BARCODE_DRONE : selectedDrone;
-  const camera = isBarcode
-    ? BARCODE_CAMERA
-    : selectedDrone.cameras.find((item) => item.id === cameraId) ?? selectedDrone.cameras[0];
+  // Barcode scanning is only set up for some aircraft, so its list is shorter.
+  const droneOptions = isBarcode ? barcodeDrones() : DRONES;
+  const drone = droneOptions.find((item) => item.id === droneId) ?? droneOptions[0];
+  const cameraOptions = isBarcode ? barcodeCameras(drone.id) : drone.cameras;
+  const camera = cameraOptions.find((item) => item.id === cameraId) ?? cameraOptions[0];
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -142,6 +137,12 @@ export const NewMissionWizard = ({ onClose }: { onClose: () => void }) => {
     if (next === type) return;
     // A file parsed for one type is no use to another.
     setType(next);
+    // An aircraft that cannot scan barcodes must not stay selected.
+    if (next === 'barcode' && !barcodeDrones().some((item) => item.id === droneId)) {
+      const fallback = defaultBarcodeAircraft();
+      setDroneId(fallback.drone.id);
+      setCameraId(fallback.camera.id);
+    }
     setSource(next === 'barcode' ? 'import' : null);
     setParsed(null);
     setParseError(null);
@@ -366,15 +367,6 @@ export const NewMissionWizard = ({ onClose }: { onClose: () => void }) => {
                 as a panel; other shapes are skipped.
               </p>
               {filePicker('Choose panel KML…')}
-              <div className="nmw-fixed-aircraft">
-                <span aria-hidden="true">🔒</span>
-                <div>
-                  <strong>
-                    {BARCODE_DRONE.name} · {BARCODE_CAMERA.name}
-                  </strong>
-                  <span className="nmw-fixed-note">Barcode scanning is planned for this aircraft and camera only.</span>
-                </div>
-              </div>
             </>
           )}
 
@@ -422,13 +414,13 @@ export const NewMissionWizard = ({ onClose }: { onClose: () => void }) => {
               <label className="nmw-field">
                 Aircraft
                 <select
-                  value={selectedDrone.id}
+                  value={drone.id}
                   onChange={(event) => {
                     setDroneId(event.target.value);
                     setCameraId('');
                   }}
                 >
-                  {DRONES.map((item) => (
+                  {droneOptions.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.name}
                     </option>
@@ -438,7 +430,7 @@ export const NewMissionWizard = ({ onClose }: { onClose: () => void }) => {
               <label className="nmw-field">
                 Camera / payload
                 <select value={camera.id} onChange={(event) => setCameraId(event.target.value)}>
-                  {selectedDrone.cameras.map((item) => (
+                  {cameraOptions.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.name}
                     </option>
@@ -452,7 +444,9 @@ export const NewMissionWizard = ({ onClose }: { onClose: () => void }) => {
               <p className="nmw-hint">
                 {isArea
                   ? 'The camera sets the GSD, line spacing and photo interval of the grid.'
-                  : 'The aircraft and payload are written into the DJI export.'}{' '}
+                  : isBarcode
+                    ? 'Only the aircraft set up for barcode scanning are listed. They are written into the DJI export.'
+                    : 'The aircraft and payload are written into the DJI export.'}{' '}
                 You can still change them later in the Flight Planning panel.
               </p>
             </>

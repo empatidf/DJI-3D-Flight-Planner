@@ -31,6 +31,8 @@ interface WaypointData {
   override?: WaypointOverride;
   /** Barcode Scan routes only: what the point is for. */
   kind?: WaypointKind;
+  /** Lens a photo must be taken with, for payloads that have more than one. */
+  photoLens?: string;
 }
 
 /**
@@ -136,11 +138,18 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
     throw new Error('Set the takeoff point first: route heights are measured from it.');
   }
 
+  // A barcode is read from the wide camera, but only a payload that has
+  // several lenses (M4E, M3E, M3T) understands a lens index at all; a
+  // single-lens payload such as the Zenmuse P1 must keep the global setting.
+  const photoLens =
+    isBarcode && /\b(wide|zoom|tele|thermal)\b/.test(mission.camera.name.toLowerCase()) ? 'wide' : undefined;
+
   const normalizedWaypoints = allWaypoints.map((waypoint) => ({
     ...waypoint,
     alt: Number.isFinite(takeoffGround)
       ? waypoint.alt - takeoffGround
       : normalizedFirstAltitude + (waypoint.alt - firstWaypointAltitude),
+    photoLens,
   }));
 
   // A barcode scan flies at its own speed, with Aircraft Yaw on Manual at the
@@ -475,13 +484,13 @@ const buildGlobalActionXml = (
   }
 
   if (parameters.waypointTakePhoto === true) {
-    // A barcode is read from the wide camera, so the photo must not follow the
-    // route's global lens setting.
+    // With a multi-lens payload the barcode photo must not follow the route's
+    // global lens setting.
     const lensTags =
-      waypoint.kind === 'barcode'
+      waypoint.kind === 'barcode' && waypoint.photoLens
         ? `
             <wpml:useGlobalPayloadLensIndex>0</wpml:useGlobalPayloadLensIndex>
-            <wpml:payloadLensIndex>wide</wpml:payloadLensIndex>`
+            <wpml:payloadLensIndex>${waypoint.photoLens}</wpml:payloadLensIndex>`
         : '';
     xml.push(`        <wpml:action>
           <wpml:actionId>${actionId++}</wpml:actionId>

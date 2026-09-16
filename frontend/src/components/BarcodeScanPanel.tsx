@@ -49,6 +49,7 @@ import {
   summarizeBarcodeRoute,
 } from '../lib/barcode-scan-route';
 import { downloadKMZ, exportToDJI } from '../lib/dji-wpml-exporter';
+import { barcodeCameras, barcodeDrones } from '../lib/drone-specs';
 import { applyBarcodePanels, flyToBounds, formatArea } from '../lib/mission-import';
 import { useMissionStore, type Mission } from '../stores/mission-store';
 import { BarcodePositionDialog } from './BarcodePositionDialog';
@@ -247,13 +248,6 @@ const ReplaceIcon = () => (
       strokeLinejoin="round"
     />
     <path d="M8 12V7.4M5.9 9.4 8 7.3l2.1 2.1" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const LockIcon = () => (
-  <svg className="bs-lock" viewBox="0 0 16 16" aria-hidden="true">
-    <rect x="3.5" y="7" width="9" height="7" rx="1.5" fill="currentColor" />
-    <path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7" fill="none" stroke="currentColor" strokeWidth="1.5" />
   </svg>
 );
 
@@ -582,6 +576,32 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
     if (barcode?.scan?.[key] !== value) updateScan({ [key]: value });
   };
 
+  /** Aircraft set up for barcode scanning, plus whatever an older mission already holds. */
+  const droneChoices = useMemo(() => {
+    const drones = barcodeDrones();
+    return drones.some((item) => item.id === mission.drone.id) ? drones : [mission.drone, ...drones];
+  }, [mission.drone]);
+  const cameraChoices = useMemo(() => {
+    const cameras = barcodeCameras(mission.drone.id);
+    if (cameras.length === 0) return [mission.camera];
+    return cameras.some((item) => item.id === mission.camera.id) ? cameras : [mission.camera, ...cameras];
+  }, [mission.drone.id, mission.camera]);
+
+  /** The payload follows the aircraft: each one has its own barcode payloads. */
+  const chooseDrone = (droneId: string) => {
+    const drone = barcodeDrones().find((item) => item.id === droneId);
+    const camera = barcodeCameras(droneId)[0] ?? drone?.cameras[0];
+    if (!drone || !camera) return;
+    const { updateMission } = useMissionStore.getState();
+    updateMission(missionIdRef.current, { drone, camera });
+  };
+
+  const chooseCamera = (cameraId: string) => {
+    const camera = barcodeCameras(mission.drone.id).find((item) => item.id === cameraId);
+    if (!camera) return;
+    useMissionStore.getState().updateMission(missionIdRef.current, { camera });
+  };
+
   const toggleTableSelection = () => {
     const store = useMissionStore.getState();
     if (store.tableSelectMissionId === mission.id) {
@@ -873,11 +893,34 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
         <div className="bs-rows">
           <div className="bs-row">
             <span className="bs-row-label">Aircraft</span>
-            <span className="bs-aircraft" title="Barcode scanning is planned for this aircraft and camera only.">
-              <LockIcon />
-              <strong>{mission.drone.name}</strong>
-              <span className="bs-aircraft-camera">· {mission.camera.name}</span>
-            </span>
+            <div className="bs-row-controls">
+              <select
+                className="bs-select"
+                value={mission.drone.id}
+                aria-label="Aircraft"
+                title="Aircraft set up for barcode scanning. Written into the DJI export."
+                onChange={(e) => chooseDrone(e.target.value)}
+              >
+                {droneChoices.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="bs-select"
+                value={mission.camera.id}
+                aria-label="Payload"
+                title="Payload of the aircraft. Written into the DJI export."
+                onChange={(e) => chooseCamera(e.target.value)}
+              >
+                {cameraChoices.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {hasPanels && barcode && (
