@@ -155,8 +155,16 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
   // A barcode scan flies at its own speed, with Aircraft Yaw on Manual at the
   // heading of the panel rows, and takes its waypoint actions from the scan
   // settings. Those actions run on the barcode points only (see kind).
+  // An area route has no aircraft yaw setting: the aircraft always faces along
+  // its flight lines ("Along the Route"). The stored heading mode is the
+  // mission default meant for waypoint routes and must not fix the yaw here.
   const scan = mission.barcode?.scan;
-  const exportMission: Mission = isBarcode
+  const exportMission: Mission = mission.missionType === 'area'
+    ? {
+        ...mission,
+        parameters: { ...mission.parameters, globalHeadingMode: 'followWayline', waypointAutoDroneHeading: true },
+      }
+    : isBarcode
     ? {
         ...mission,
         parameters: {
