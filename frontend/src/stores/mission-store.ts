@@ -90,6 +90,17 @@ export interface FlightLine {
   waypointOverrides?: Record<string, WaypointOverride>;
 }
 
+/**
+ * A mission saved without a valid type (older versions) is shown as an area
+ * mission everywhere, so it gets that type when loaded. Without it the DJI
+ * export treated such a mission as neither area nor waypoint route and wrote
+ * the waypoint-route default, a Manual aircraft yaw.
+ */
+export const withMissionType = <T extends Mission>(mission: T): T =>
+  mission.missionType === 'area' || mission.missionType === 'waypoint' || mission.missionType === 'barcode'
+    ? mission
+    : { ...mission, missionType: 'area' };
+
 /** Stable key for a waypoint override. ~1 cm resolution. */
 export const waypointKey = (lon: number, lat: number): string =>
   `${Number(lon).toFixed(7)},${Number(lat).toFixed(7)}`;
@@ -743,11 +754,13 @@ export const useMissionStore = create<MissionStore>()(
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<PersistedMissionState>;
 
-        const hydratedMissions = (persisted.missions ?? []).map((mission) => ({
-          ...mission,
-          createdAt: new Date(mission.createdAt),
-          updatedAt: new Date(mission.updatedAt),
-        }));
+        const hydratedMissions = (persisted.missions ?? []).map((mission) =>
+          withMissionType({
+            ...mission,
+            createdAt: new Date(mission.createdAt),
+            updatedAt: new Date(mission.updatedAt),
+          })
+        );
 
         const missionsMigrated = persisted.missionsMigrated ?? false;
         // After the move the missions arrive later from IndexedDB, and folder

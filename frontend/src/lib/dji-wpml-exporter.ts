@@ -158,8 +158,11 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
   // An area route has no aircraft yaw setting: the aircraft always faces along
   // its flight lines ("Along the Route"). The stored heading mode is the
   // mission default meant for waypoint routes and must not fix the yaw here.
+  // Area is decided like the Flight Planning panel does: everything that is not
+  // a waypoint route or a barcode scan, including missions saved untyped.
+  const isArea = mission.missionType !== 'waypoint' && !isBarcode;
   const scan = mission.barcode?.scan;
-  const exportMission: Mission = mission.missionType === 'area'
+  const exportMission: Mission = isArea
     ? {
         ...mission,
         parameters: { ...mission.parameters, globalHeadingMode: 'followWayline', waypointAutoDroneHeading: true },

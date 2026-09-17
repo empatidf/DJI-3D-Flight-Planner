@@ -17,7 +17,7 @@
  */
 
 import JSZip from 'jszip';
-import { MISSION_STORE_KEY, useMissionStore, type Mission } from '../../stores/mission-store';
+import { MISSION_STORE_KEY, useMissionStore, withMissionType, type Mission } from '../../stores/mission-store';
 import * as cache from './mission-cache';
 import { useFolderStatus, type FolderStatus } from './folder-status';
 import {
@@ -222,7 +222,9 @@ const handleStoreChange = (state: MissionState, previous: MissionState) => {
 };
 
 /** Put missions into the store without them counting as edits. */
-const applyMissions = (missions: Mission[]) => {
+const applyMissions = (loaded: Mission[]) => {
+  // The browser cache keeps missions as they were saved, including untyped ones.
+  const missions = loaded.map(withMissionType);
   lastSeen = new Map(missions.map((mission) => [mission.id, mission]));
   lastOrderKey = missions.map((mission) => mission.id).join('|');
 

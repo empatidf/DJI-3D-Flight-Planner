@@ -10,7 +10,7 @@
  * "Import Mission".
  */
 
-import type { Mission } from '../../stores/mission-store';
+import { withMissionType, type Mission } from '../../stores/mission-store';
 
 export const PROJECT_FILE_NAME = 'droneverse-project.json';
 export const MISSIONS_DIR = 'missions';
@@ -69,18 +69,18 @@ export const parseMissionFile = (text: string): Mission => {
     typeof mission.id === 'string' &&
     mission.id.length > 0 &&
     typeof mission.name === 'string' &&
-    (mission.missionType === 'area' || mission.missionType === 'waypoint' || mission.missionType === 'barcode') &&
+    // A missing type is an older area mission (see withMissionType).
     typeof mission.parameters === 'object' &&
     mission.parameters !== null &&
     Array.isArray(mission.flightLines);
   if (!valid) throw new Error('mission data is incomplete');
 
-  return {
+  return withMissionType({
     ...(mission as unknown as Mission),
     visible: mission.visible !== false,
     createdAt: toDate(mission.createdAt),
     updatedAt: toDate(mission.updatedAt),
-  };
+  });
 };
 
 export const serializeProject = (missionOrder: string[]): string =>
