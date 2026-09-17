@@ -10,5 +10,5 @@ export const APP_VERSION = 'v3';
 
 export const BUILD_DATE: string = typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : '';
 
-/** What the UI shows, e.g. "v3 · 2026-08-28". */
+/** What the UI shows, e.g. "v3 · 2026-09-17 13:01 UTC". */
 export const APP_VERSION_LABEL = BUILD_DATE ? `${APP_VERSION} · ${BUILD_DATE}` : APP_VERSION;

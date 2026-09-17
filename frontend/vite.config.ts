@@ -49,7 +49,8 @@ export default defineConfig({
   ],
   // Stamp the build date into the bundle so the version badge stays honest.
   define: {
-    __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    // Date and time, so two deploys on the same day can be told apart.
+    __BUILD_DATE__: JSON.stringify(`${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`),
   },
   server: {
     port: 3000,
