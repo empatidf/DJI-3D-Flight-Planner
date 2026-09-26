@@ -173,7 +173,8 @@ export const applyBarcodePanels = (missionId: string, fileName: string, layout: 
       panelSize: layout.panelSize,
       structure: layout.structure,
       label: mission.barcode?.label,
-      scan: scan && { ...scan, tables: undefined, routeKey: undefined },
+      scan:
+        scan && { ...scan, tables: undefined, flippedTables: undefined, markedTables: undefined, routeKey: undefined },
       style: { ...DEFAULT_PANEL_STYLE, ...mission.barcode?.style },
     },
   });

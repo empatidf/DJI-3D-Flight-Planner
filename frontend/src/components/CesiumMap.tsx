@@ -60,7 +60,11 @@ import {
   type BarcodeScanData,
   type PanelStyle,
 } from '../lib/barcode-panels';
-import { BarcodePanelImageryProvider, PanelTileIndex } from '../lib/barcode-panel-imagery-provider';
+import {
+  BarcodePanelImageryProvider,
+  PanelTileIndex,
+  type PanelMarks,
+} from '../lib/barcode-panel-imagery-provider';
 import type { ImageryProvider, TerrainProvider } from 'cesium';
 import { WaypointActionDialog, WaypointQuickEdit } from './WaypointEditors';
 import type { WaypointAction } from '../lib/wpml-actions';
@@ -76,7 +80,7 @@ interface PanelLayer {
   corners: string;
   index: PanelTileIndex;
   styleKey: string;
-  /** Label settings and table detection the barcode points were computed for. */
+  /** Label settings, table detection and flipped tables the points were computed for. */
   pointsKey: string;
   points: Float64Array | null;
   layer: ImageryLayer;
@@ -145,12 +149,19 @@ export const CesiumMap = () => {
     y: number;
     lon: number;
     lat: number;
+    /** Barcode missions: the table under the cursor, with what is set on it. */
+    table: number | null;
+    tableFlipped: boolean;
+    tableMarked: boolean;
   }>({
     visible: false,
     x: 0,
     y: 0,
     lon: 0,
     lat: 0,
+    table: null,
+    tableFlipped: false,
+    tableMarked: false,
   });
   const [cropMenuState, setCropMenuState] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [cropUndoData, setCropUndoData] = useState<number[][] | null>(null);
@@ -554,13 +565,46 @@ export const CesiumMap = () => {
       return;
     }
 
+    // A Barcode Scan mission adds its own entries for the string under the cursor.
+    const mission = useMissionStore.getState().missions.find((item) => item.id === activeMissionId);
+    const data = mission?.missionType === 'barcode' ? mission.barcode : undefined;
+    let table: number | null = null;
+    if (data?.structure && mission?.visible) {
+      const { tables } = numberTablesCached(data.corners, {
+        tableGapM: data.structure.tableGapM,
+        installationBearing: data.structure.installationBearing,
+      });
+      table = findTableAt(tables, lonLat.lon, lonLat.lat);
+    }
+
     setContextMenuState({
       visible: true,
       x: event.clientX,
       y: event.clientY,
       lon: lonLat.lon,
       lat: lonLat.lat,
+      table,
+      tableFlipped: table !== null && (data?.scan?.flippedTables ?? []).includes(table),
+      tableMarked: table !== null && (data?.scan?.markedTables ?? []).includes(table),
     });
+  };
+
+  /**
+   * Put one string on or off a list of the mission's barcode settings:
+   * `flippedTables` turns its labels, `markedTables` only recolours it.
+   */
+  const setTableInList = (key: 'flippedTables' | 'markedTables', table: number, member: boolean) => {
+    const store = useMissionStore.getState();
+    const mission = store.missions.find((item) => item.id === activeMissionId);
+    const data = mission?.barcode;
+    if (!mission || !data) return;
+
+    const current = data.scan?.[key] ?? [];
+    const next = member
+      ? [...new Set([...current, table])].sort((a, b) => a - b)
+      : current.filter((item) => item !== table);
+    store.updateMission(mission.id, { barcode: { ...data, scan: { ...data.scan, [key]: next } } });
+    setContextMenuState((prev) => ({ ...prev, visible: false }));
   };
 
   const handleCopyClickedCoordinate = async () => {
@@ -1436,10 +1480,11 @@ export const CesiumMap = () => {
       missionId: string,
       index: PanelTileIndex,
       style: PanelStyle,
-      points: Float64Array | null
+      points: Float64Array | null,
+      marks: PanelMarks | null
     ) => {
       const layer = imageryLayers.addImageryProvider(
-        new BarcodePanelImageryProvider(index, style, points) as unknown as ImageryProvider
+        new BarcodePanelImageryProvider(index, style, points, marks) as unknown as ImageryProvider
       );
       // @ts-expect-error - marker property read by enforceImageryOrder
       layer._customLayerId = `panels-${missionId}`;
@@ -1468,17 +1513,35 @@ export const CesiumMap = () => {
       const style: PanelStyle = { ...DEFAULT_PANEL_STYLE, ...data.style };
       const styleKey = JSON.stringify(style);
       // Barcode points follow the label settings and the detected tables and rows.
+      const flippedTables = data.scan?.flippedTables ?? [];
+      const markedTables = data.scan?.markedTables ?? [];
       const pointsKey = JSON.stringify([
         data.label ?? null,
         data.structure?.tableGapM ?? null,
         data.structure?.installationBearing ?? null,
+        flippedTables,
+        markedTables,
       ]);
-      const pointsFor = (index: PanelTileIndex) =>
+      // Table numbers are needed for the inverted tables (their points) and
+      // for the marked ones (the colour they are drawn in).
+      const marksFor = (): PanelMarks | null =>
+        data.structure
+          ? {
+              tableOfPanel: numberTablesCached(data.corners, {
+                tableGapM: data.structure.tableGapM,
+                installationBearing: data.structure.installationBearing,
+              }).tableOfPanel,
+              marked: new Set(markedTables),
+            }
+          : null;
+      const pointsFor = (index: PanelTileIndex, marks: PanelMarks | null) =>
         data.label && data.structure
           ? computeBarcodePoints(index.corners, {
               tableGapM: data.structure.tableGapM,
               installationBearing: data.structure.installationBearing,
               settings: data.label,
+              tableOfPanel: marks?.tableOfPanel,
+              flippedTables,
             })
           : null;
 
@@ -1486,26 +1549,28 @@ export const CesiumMap = () => {
 
       if (!entry) {
         const index = new PanelTileIndex(decodePanelCorners(data.corners), data.bounds, data.panelSize);
-        const points = pointsFor(index);
+        const marks = marksFor();
+        const points = pointsFor(index, marks);
         entry = {
           corners: data.corners,
           index,
           styleKey,
           pointsKey,
           points,
-          layer: addPanelLayer(missionId, index, style, points),
+          layer: addPanelLayer(missionId, index, style, points, marks),
         };
         layers.set(missionId, entry);
         changed = true;
       } else if (entry.styleKey !== styleKey || entry.pointsKey !== pointsKey) {
+        const marks = marksFor();
         if (entry.pointsKey !== pointsKey) {
-          entry.points = pointsFor(entry.index);
+          entry.points = pointsFor(entry.index, marks);
           entry.pointsKey = pointsKey;
         }
         // Tiles are cached per layer, so a new style or new points need a fresh layer.
         drop(entry);
         entry.styleKey = styleKey;
-        entry.layer = addPanelLayer(missionId, entry.index, style, entry.points);
+        entry.layer = addPanelLayer(missionId, entry.index, style, entry.points, marks);
         changed = true;
       }
 
@@ -3139,6 +3204,19 @@ export const CesiumMap = () => {
       const routeMaterial = new ColorMaterialProperty(routeColor);
       const connectorMaterial = new ColorMaterialProperty(routeColor.withAlpha(0.9));
 
+      // A Barcode Scan route says what each waypoint is for, so scanning and
+      // flying apart can be told apart at a glance: scan legs keep the route
+      // colour, legs to or from a transit point are orange, and the barcodes
+      // turn red once a photo is taken at them.
+      const takesPhoto = mission.barcode?.scan?.takePhotoEnabled === true;
+      const transitColor = mission.archived ? Color.RED.withAlpha(0.75) : Color.fromCssColorString('#ff8a00');
+      const transitMaterial = new ColorMaterialProperty(transitColor);
+      // Straight into the next run of strings, flown at scan altitude.
+      const linkMaterial = new ColorMaterialProperty(
+        mission.archived ? Color.RED : Color.fromCssColorString('#e11d48')
+      );
+      const barcodeColor = mission.archived ? Color.RED : takesPhoto ? Color.RED : Color.YELLOW;
+
       console.log(`Rendering flight lines for mission ${mission.name}: ${mission.flightLines.length} lines`);
       
       const missionAltitude = mission.parameters.altitude;
@@ -3192,31 +3270,51 @@ export const CesiumMap = () => {
           
           console.log(`  Creating polyline with ${positions.length} positions`);
 
-          const lineEntityId = `flight-line-${mission.id}-${lineIndex}`;
-          activeLineEntityIds.add(lineEntityId);
-
-          const existingLineEntity = viewer.entities.getById(lineEntityId);
-          if (existingLineEntity?.polyline) {
-            existingLineEntity.name = `Flight Line ${lineIndex + 1}`;
-            existingLineEntity.polyline.positions = new ConstantProperty(positions);
-            // Re-apply on the update path too, so archiving recolours a route
-            // that already has an entity instead of leaving it yellow.
-            existingLineEntity.polyline.material = routeMaterial;
-          } else {
-            viewer.entities.add({
-              id: lineEntityId,
-              name: `Flight Line ${lineIndex + 1}`,
-              polyline: {
-                positions: positions,
-                width: 4,
-                material: routeMaterial,
-                clampToGround: false,
-                arcType: 0,
-              },
-            });
+          // One run per stretch of the same kind; a plain route is a single run.
+          const kinds = line.pointKinds;
+          const links = new Set(line.linkLegs ?? []);
+          const legKind = (index: number): 'scan' | 'transit' | 'link' => {
+            if (links.has(index)) return 'link';
+            const known = !!kinds && kinds.length === safeCoordinates.length;
+            return known && (kinds![index] === 'transit' || kinds![index + 1] === 'transit') ? 'transit' : 'scan';
+          };
+          const runs: { positions: Cartesian3[]; kind: 'scan' | 'transit' | 'link' }[] = [];
+          for (let index = 0; index < positions.length - 1; index++) {
+            const kind = legKind(index);
+            const current = runs[runs.length - 1];
+            if (current && current.kind === kind && kind !== 'link') current.positions.push(positions[index + 1]);
+            else runs.push({ positions: [positions[index], positions[index + 1]], kind });
           }
-          
-          console.log(`  ✓ Updated polyline entity: ${lineEntityId}`);
+
+          runs.forEach((run, runIndex) => {
+            const lineEntityId = `flight-line-${mission.id}-${lineIndex}-${runIndex}`;
+            activeLineEntityIds.add(lineEntityId);
+            const material =
+              run.kind === 'link' ? linkMaterial : run.kind === 'transit' ? transitMaterial : routeMaterial;
+
+            const existingLineEntity = viewer.entities.getById(lineEntityId);
+            if (existingLineEntity?.polyline) {
+              existingLineEntity.name = `Flight Line ${lineIndex + 1}`;
+              existingLineEntity.polyline.positions = new ConstantProperty(run.positions);
+              // Re-apply on the update path too, so archiving recolours a route
+              // that already has an entity instead of leaving it yellow.
+              existingLineEntity.polyline.material = material;
+            } else {
+              viewer.entities.add({
+                id: lineEntityId,
+                name: `Flight Line ${lineIndex + 1}`,
+                polyline: {
+                  positions: run.positions,
+                  width: run.kind === 'link' ? 6 : run.kind === 'transit' ? 3 : 4,
+                  material,
+                  clampToGround: false,
+                  arcType: 0,
+                },
+              });
+            }
+          });
+
+          console.log(`  ✓ Updated ${runs.length} polyline entities for line ${lineIndex}`);
           totalLinesRendered++;
         }
 
@@ -3274,14 +3372,21 @@ export const CesiumMap = () => {
             lineIndex === lastWaypointRef.lineIndex &&
             wpIndex === lastWaypointRef.wpIndex;
 
-          const pointSize = isStartPoint || isEndPoint ? 13 : isPhotoPoint ? 10 : 6;
+          // Barcode routes mark every waypoint: a barcode (red once photos are
+          // taken there) or a point that is only flown through.
+          const kind = line.pointKinds?.[wpIndex];
+          const pointSize = isStartPoint || isEndPoint ? 13 : isPhotoPoint ? 10 : kind === 'transit' ? 5 : 6;
           const pointColor = isStartPoint
             ? Color.LIME
             : isEndPoint
               ? Color.YELLOW
               : isPhotoPoint
                 ? Color.RED
-                : Color.YELLOW;
+                : kind === 'transit'
+                  ? transitColor
+                  : kind === 'barcode'
+                    ? barcodeColor
+                    : Color.YELLOW;
 
           viewer.entities.add({
             id: `waypoint-${mission.id}-${lineIndex}-${wpIndex}`,
@@ -3420,6 +3525,28 @@ export const CesiumMap = () => {
           }}
           onClick={(event) => event.stopPropagation()}
         >
+          {contextMenuState.table !== null && (
+            <>
+              <div className="map-context-menu-head">Table {contextMenuState.table}</div>
+              <button
+                type="button"
+                className="map-context-menu-item"
+                onClick={() => setTableInList('flippedTables', contextMenuState.table!, !contextMenuState.tableFlipped)}
+                title="Turn the barcode pattern of this string: its labels move to the opposite corner."
+              >
+                {contextMenuState.tableFlipped ? 'Undo invert' : 'Invert'}
+              </button>
+              <button
+                type="button"
+                className="map-context-menu-item"
+                onClick={() => setTableInList('markedTables', contextMenuState.table!, !contextMenuState.tableMarked)}
+                title="Draw this string in the marked colour. Only a colour; it changes nothing about the scan."
+              >
+                {contextMenuState.tableMarked ? 'Back to normal colour' : 'Change colour to red'}
+              </button>
+              <div className="map-context-menu-sep" />
+            </>
+          )}
           <button type="button" className="map-context-menu-item" onClick={handleCopyClickedCoordinate}>
             Copy coordinates
           </button>

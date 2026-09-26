@@ -81,6 +81,11 @@ export interface FlightLine {
   photoPoints: number[][]; // photo capture points
   /** Kind of every waypoint, same order as `coordinates`; Barcode Scan routes only. */
   pointKinds?: WaypointKind[];
+  /**
+   * Legs flown straight from one run of strings into the next, no climb: the
+   * index of the waypoint the leg starts at. Drawn apart on the map.
+   */
+  linkLegs?: number[];
   originalCoordinates?: number[][]; // pre-terrain-follow snapshot, used to revert
   /**
    * Per-waypoint overrides keyed by `waypointKey(lon, lat)` rather than by index,

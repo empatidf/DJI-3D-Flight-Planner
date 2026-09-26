@@ -11,7 +11,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  BARCODE_GAP_RESET_M,
   BARCODE_LABEL_DEPTH_M,
   BARCODE_LABEL_WIDTH_M,
   BARCODE_SLOTS,
@@ -93,7 +92,6 @@ export const BarcodePositionDialog = ({
   );
   const [countAlong, setCountAlong] = useState<BarcodeLabelSettings['countAlong']>(initial?.countAlong ?? 'forward');
   const [upsideDown, setUpsideDown] = useState(initial?.upsideDown ?? false);
-  const [resetOnGap, setResetOnGap] = useState(initial?.resetOnGap ?? false);
   const [fourCorners, setFourCorners] = useState(initial?.fourCorners ?? false);
   const [cornerInsetCm, setCornerInsetCm] = useState(() => formatCm(initial?.cornerInsetM ?? DEFAULT_CORNER_INSET_M));
   const [insetEndCm, setInsetEndCm] = useState(() => formatCm(labelInsets(initial ?? {}).fromEndM));
@@ -137,7 +135,6 @@ export const BarcodePositionDialog = ({
       topEdge,
       countAlong,
       upsideDown,
-      resetOnGap: upsideDown && resetOnGap,
       insetFromEndM: insets.fromEndM,
       insetFromSideM: insets.fromSideM,
       fourCorners,
@@ -162,20 +159,18 @@ export const BarcodePositionDialog = ({
   // --- Pattern along one row -------------------------------------------------
   const patternScale = PATTERN_MODULE_HEIGHT / panelSize.length;
   const patternModuleWidth = panelSize.width * patternScale;
-  const patternBreak = 16;
+  // Only 4 Corner Mode still has something to say about a break in the row:
+  // the modules on either side of it keep their own corner points. The
+  // alternating pattern simply runs on, so a break would only mislead.
+  const patternBreak = fourCorners ? 16 : 0;
   const patternTotal =
-    PATTERN_MODULES * patternModuleWidth + (PATTERN_MODULES - 2) * PATTERN_GAP_PX + patternBreak;
+    PATTERN_MODULES * patternModuleWidth + (PATTERN_MODULES - 1) * PATTERN_GAP_PX + patternBreak;
   const patternX0 = (PATTERN_WIDTH - patternTotal) / 2;
   const patternY0 = 22;
   const patternModules = Array.from({ length: PATTERN_MODULES }, (_, index) => {
-    const afterBreak = index >= PATTERN_BREAK_AFTER;
-    // Position in the sequence; Reset on gap starts counting again after the break.
-    const sequence = upsideDown && resetOnGap && afterBreak ? index - PATTERN_BREAK_AFTER : index;
-    const x =
-      patternX0 +
-      index * (patternModuleWidth + PATTERN_GAP_PX) +
-      (afterBreak ? patternBreak - PATTERN_GAP_PX : 0);
-    return { x, flipped: upsideDown && sequence % 2 === 1 };
+    const afterBreak = fourCorners && index >= PATTERN_BREAK_AFTER;
+    const x = patternX0 + index * (patternModuleWidth + PATTERN_GAP_PX) + (afterBreak ? patternBreak : 0);
+    return { x, flipped: upsideDown && index % 2 === 1 };
   });
 
   /**
@@ -467,21 +462,7 @@ export const BarcodePositionDialog = ({
                 <small>Every next module along a row is turned 180°.</small>
               </span>
             </label>
-
-            <label className={`bpd-check${upsideDown ? '' : ' is-disabled'}`}>
-              <input
-                type="checkbox"
-                checked={upsideDown && resetOnGap}
-                disabled={!upsideDown}
-                onChange={(e) => setResetOnGap(e.target.checked)}
-              />
-              <span>
-                <strong>Reset on gap</strong>
-                <small>After a break wider than {BARCODE_GAP_RESET_M * 100} cm the row starts at the chosen spot again.</small>
-              </span>
-            </label>
-
-            </>
+              </>
             )}
 
             <fieldset className="bpd-field">
@@ -545,11 +526,20 @@ export const BarcodePositionDialog = ({
                 <text x={patternX0} y="12" className="bpd-pattern-dir">
                   {fourCorners
                     ? 'corners, shared borders merged'
-                    : `→ along ${(countAlong === 'forward' ? forwardCourse : reverseCourse).toFixed(1)}°`}
+                    : `→ along ${(countAlong === 'forward' ? forwardCourse : reverseCourse).toFixed(1)}°${
+                        upsideDown ? ', alternating to the end of the string' : ''
+                      }`}
                 </text>
-                <text x={patternModules[PATTERN_BREAK_AFTER].x - 8} y="12" textAnchor="middle" className="bpd-pattern-gap">
-                  gap
-                </text>
+                {fourCorners && (
+                  <text
+                    x={patternModules[PATTERN_BREAK_AFTER].x - 8}
+                    y="12"
+                    textAnchor="middle"
+                    className="bpd-pattern-gap"
+                  >
+                    gap
+                  </text>
+                )}
                 {patternModules.map((module, index) => (
                   <rect
                     key={`m${index}`}

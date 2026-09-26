@@ -14,6 +14,12 @@ import { Credit, Event as CesiumEvent, GeographicTilingScheme, Math as CesiumMat
 import { forEachBarcodePoint } from './barcode-panels';
 import type { BarcodeSymbol, PanelBounds, PanelSize, PanelStyle } from './barcode-panels';
 
+/** Which table every panel belongs to, and the tables marked by hand. */
+export interface PanelMarks {
+  tableOfPanel: Int32Array;
+  marked: Set<number>;
+}
+
 const TILE_SIZE = 256;
 /** Stop refining once one tile pixel covers this much ground. */
 const FINEST_METERS_PER_PIXEL = 0.015;
@@ -201,6 +207,7 @@ export class BarcodePanelImageryProvider {
   private readonly style: PanelStyle;
   /** lon,lat of each panel's barcode label, indexed like the panels; NaN where unknown. */
   private readonly points: Float64Array | null;
+  private readonly marks: PanelMarks | null;
   private readonly _tilingScheme = new GeographicTilingScheme();
   private readonly _rectangle: Rectangle;
   private readonly _errorEvent = new CesiumEvent();
@@ -208,10 +215,16 @@ export class BarcodePanelImageryProvider {
   private readonly _minimumLevel: number;
   private readonly _maximumLevel: number;
 
-  constructor(index: PanelTileIndex, style: PanelStyle, points: Float64Array | null = null) {
+  constructor(
+    index: PanelTileIndex,
+    style: PanelStyle,
+    points: Float64Array | null = null,
+    marks: PanelMarks | null = null
+  ) {
     this.index = index;
     this.style = style;
     this.points = points;
+    this.marks = marks;
 
     const { west, south, east, north } = index.bounds;
     this._rectangle = Rectangle.fromDegrees(
@@ -287,39 +300,64 @@ export class BarcodePanelImageryProvider {
 
     ctx.beginPath();
 
+    // Strings keep their colour at every zoom level; marked ones stand out.
+    const marks = style.stringColorsEnabled ? this.marks : null;
+    const isMarked = marks ? (panel: number) => marks.marked.has(marks.tableOfPanel[panel]) : null;
+
     if (panelPixels < OUTLINE_MIN_PIXELS) {
       // Far away: one solid block per panel keeps the rows readable.
-      index.forEachNear(west, south, east, north, (panel) => {
-        const offset = panel * 8;
-        let minX = Infinity;
-        let maxX = -Infinity;
-        let minY = Infinity;
-        let maxY = -Infinity;
-        for (let k = 0; k < 8; k += 2) {
-          const px = (corners[offset + k] - west) * scaleX;
-          const py = (north - corners[offset + k + 1]) * scaleY;
-          if (px < minX) minX = px;
-          if (px > maxX) maxX = px;
-          if (py < minY) minY = py;
-          if (py > maxY) maxY = py;
-        }
-        ctx.rect(Math.floor(minX), Math.floor(minY), Math.max(1, Math.ceil(maxX - minX)), Math.max(1, Math.ceil(maxY - minY)));
-      });
+      const traceBlocks = (keep?: (panel: number) => boolean) => {
+        ctx.beginPath();
+        index.forEachNear(west, south, east, north, (panel) => {
+          if (keep && !keep(panel)) return;
+          const offset = panel * 8;
+          let minX = Infinity;
+          let maxX = -Infinity;
+          let minY = Infinity;
+          let maxY = -Infinity;
+          for (let k = 0; k < 8; k += 2) {
+            const px = (corners[offset + k] - west) * scaleX;
+            const py = (north - corners[offset + k + 1]) * scaleY;
+            if (px < minX) minX = px;
+            if (px > maxX) maxX = px;
+            if (py < minY) minY = py;
+            if (py > maxY) maxY = py;
+          }
+          ctx.rect(Math.floor(minX), Math.floor(minY), Math.max(1, Math.ceil(maxX - minX)), Math.max(1, Math.ceil(maxY - minY)));
+        });
+      };
+
       ctx.globalAlpha = style.outlineEnabled ? 1 : style.fillOpacity;
-      ctx.fillStyle = style.outlineEnabled ? style.outlineColor : style.fillColor;
-      ctx.fill();
+      if (isMarked) {
+        traceBlocks((panel) => !isMarked(panel));
+        ctx.fillStyle = style.stringColor;
+        ctx.fill();
+        traceBlocks(isMarked);
+        ctx.fillStyle = style.markedStringColor;
+        ctx.fill();
+      } else {
+        traceBlocks();
+        ctx.fillStyle = style.outlineEnabled ? style.outlineColor : style.fillColor;
+        ctx.fill();
+      }
       return canvas;
     }
 
     // One path for every panel in the tile: a single fill and a single stroke call.
-    index.forEachNear(west - marginLon, south - marginLat, east + marginLon, north + marginLat, (panel) => {
-      const offset = panel * 8;
-      ctx.moveTo((corners[offset] - west) * scaleX, (north - corners[offset + 1]) * scaleY);
-      ctx.lineTo((corners[offset + 2] - west) * scaleX, (north - corners[offset + 3]) * scaleY);
-      ctx.lineTo((corners[offset + 4] - west) * scaleX, (north - corners[offset + 5]) * scaleY);
-      ctx.lineTo((corners[offset + 6] - west) * scaleX, (north - corners[offset + 7]) * scaleY);
-      ctx.closePath();
-    });
+    const tracePanels = (keep?: (panel: number) => boolean) => {
+      ctx.beginPath();
+      index.forEachNear(west - marginLon, south - marginLat, east + marginLon, north + marginLat, (panel) => {
+        if (keep && !keep(panel)) return;
+        const offset = panel * 8;
+        ctx.moveTo((corners[offset] - west) * scaleX, (north - corners[offset + 1]) * scaleY);
+        ctx.lineTo((corners[offset + 2] - west) * scaleX, (north - corners[offset + 3]) * scaleY);
+        ctx.lineTo((corners[offset + 4] - west) * scaleX, (north - corners[offset + 5]) * scaleY);
+        ctx.lineTo((corners[offset + 6] - west) * scaleX, (north - corners[offset + 7]) * scaleY);
+        ctx.closePath();
+      });
+    };
+
+    tracePanels();
 
     if (style.fillEnabled) {
       ctx.globalAlpha = style.fillOpacity;
@@ -328,11 +366,22 @@ export class BarcodePanelImageryProvider {
     }
     if (style.outlineEnabled) {
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = style.outlineColor;
       // A stroke wider than a third of the panel would swallow it at medium zoom.
       ctx.lineWidth = Math.max(1, Math.min(style.outlineWidth, panelPixels / 3));
       ctx.lineJoin = 'miter';
-      ctx.stroke();
+
+      if (isMarked) {
+        // Two strokes: the plain strings, and the ones marked by hand.
+        tracePanels((panel) => !isMarked(panel));
+        ctx.strokeStyle = style.stringColor;
+        ctx.stroke();
+        tracePanels(isMarked);
+        ctx.strokeStyle = style.markedStringColor;
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = style.outlineColor;
+        ctx.stroke();
+      }
     }
 
     const points = this.points;

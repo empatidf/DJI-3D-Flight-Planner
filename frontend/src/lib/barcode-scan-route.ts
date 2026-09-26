@@ -25,12 +25,38 @@ export const SAFE_TAKEOFF_DEFAULT_M = 20;
 const METERS_PER_DEGREE_LAT = 110574;
 const METERS_PER_DEGREE_LON_AT_EQUATOR = 111320;
 
+
+/** Neighbours on each side a barcode is compared with before it counts as a spike. */
+const SPIKE_WINDOW = 3;
+/** A barcode this far below its neighbours on the line is a bad sample, not a slope. */
+const SPIKE_DROP_M = 1;
+
 /**
- * Longest straight-on leg flown between two barcodes without a point in
- * between. At scan altitude the aircraft is less than a metre over the
- * panels, so a long leg follows the ground instead of cutting across it.
+ * Heights along one scan line, with single points that read far too low
+ * pulled up to their neighbours. Panels are flat and the points are a couple
+ * of metres apart, so a metre of sudden drop is the DSM, not the site.
  */
-const STRAIGHT_LEG_STEP_M = 10;
+const withoutSpikes = (heights: number[]): { heights: number[]; fixed: number } => {
+  const result = [...heights];
+  let fixed = 0;
+
+  for (let index = 0; index < heights.length; index++) {
+    const from = Math.max(0, index - SPIKE_WINDOW);
+    const to = Math.min(heights.length - 1, index + SPIKE_WINDOW);
+    const neighbours: number[] = [];
+    for (let other = from; other <= to; other++) if (other !== index) neighbours.push(heights[other]);
+    if (neighbours.length < 3) continue;
+
+    neighbours.sort((a, b) => a - b);
+    const middle = neighbours[Math.floor(neighbours.length / 2)];
+    if (heights[index] < middle - SPIKE_DROP_M) {
+      result[index] = middle;
+      fixed++;
+    }
+  }
+
+  return { heights: result, fixed };
+};
 
 /** Settings of the scan route with their defaults applied. */
 export const barcodeRouteSettings = (mission: Mission) => {
@@ -40,6 +66,7 @@ export const barcodeRouteSettings = (mission: Mission) => {
     safeJumpM: scan?.safeJumpM ?? DEFAULT_SAFE_JUMP_M,
     safeTakeoffM: mission.parameters.safeTakeoffAltitude ?? SAFE_TAKEOFF_DEFAULT_M,
     tables: scan?.tables ?? [],
+    flippedTables: scan?.flippedTables ?? [],
     startCorner: scan?.startCorner ?? DEFAULT_SCAN_START_CORNER,
   };
 };
@@ -112,8 +139,8 @@ const findMission = (missionId: string) => useMissionStore.getState().missions.f
  * 3. Next table: climb by the safe jump over the last barcode (or over the next
  *    table's first barcode, if that one is higher), fly level, descend onto it.
  *    A table that starts straight ahead in the same line needs none of that,
- *    and neither does any table when the safe jump is 0: the aircraft flies on
- *    at scan altitude (see continuesAhead).
+ *    and neither does any table when the safe jump is 0: the aircraft flies
+ *    straight to its first barcode, no waypoint in between.
  * 4. After the last barcode: climb by the safe jump, clear of the panels.
  */
 export const generateBarcodeScanRoute = async (missionId: string): Promise<string> => {
@@ -138,34 +165,39 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
     ...detection,
     label: barcode.label!,
     tables: settings.tables,
+    flippedTables: settings.flippedTables,
     startCorner: settings.startCorner,
     tableOfPanel,
   });
   if (paths.length === 0) throw new Error('None of the selected tables has barcode positions.');
 
   // A table reached without a jump — straight ahead, or with the safe jump set
-  // to 0 — is flown at scan altitude. Long legs get points in between so they
-  // keep their height over the ground.
+  // to 0 — is flown to directly, at the scan altitude of its first barcode.
   const flyOn = (path: (typeof paths)[number]) => path.continuesAhead || settings.safeJumpM <= 0;
-  const legs = paths.map((path, index) => {
-    const previous = index > 0 ? paths[index - 1].points[paths[index - 1].points.length - 1] : null;
-    const between: [number, number][] = [];
-    if (previous && flyOn(path)) {
-      const [fromLon, fromLat] = previous;
-      const [toLon, toLat] = path.points[0];
-      const kx = METERS_PER_DEGREE_LON_AT_EQUATOR * Math.cos((toLat * Math.PI) / 180);
-      const metres = Math.hypot((toLon - fromLon) * kx, (toLat - fromLat) * METERS_PER_DEGREE_LAT);
-      const steps = Math.floor(metres / STRAIGHT_LEG_STEP_M);
-      for (let step = 1; step <= steps; step++) {
-        const t = step / (steps + 1);
-        between.push([fromLon + (toLon - fromLon) * t, fromLat + (toLat - fromLat) * t]);
-      }
-    }
-    return { path, between };
-  });
 
-  const scanPoints = legs.flatMap((leg) => [...leg.between, ...leg.path.points].map(([lon, lat]) => [lon, lat, 0]));
-  const sampled = await sampleTerrainForWaypoints(viewer, scanPoints, settings.scanAltitudeM);
+  // The height of a barcode is read in the middle of its module half, not at
+  // the barcode itself: a barcode sits centimetres from the edge, where a
+  // surface model easily reads the ground between the rows, and a tilted
+  // module is lower at its bottom edge than at its top. The waypoint keeps
+  // the barcode's own position.
+  const scanPoints = paths.flatMap((path) => path.points.map(([lon, lat]) => [lon, lat, 0]));
+  const centers = paths.flatMap((path) => path.heightRefs.map(([lon, lat]) => [lon, lat, 0]));
+  const probed = await sampleTerrainForWaypoints(viewer, centers, settings.scanAltitudeM);
+
+  const sampled = scanPoints.map(([lon, lat], index) => [lon, lat, probed[index][2]]);
+
+  // Whatever is still a spike is smoothed along its own run.
+  let spikesFixed = 0;
+  let smoothOffset = 0;
+  for (const path of paths) {
+    const slice = sampled.slice(smoothOffset, smoothOffset + path.points.length);
+    const { heights, fixed } = withoutSpikes(slice.map((point) => point[2]));
+    heights.forEach((height, index) => {
+      sampled[smoothOffset + index][2] = height;
+    });
+    spikesFixed += fixed;
+    smoothOffset += path.points.length;
+  }
 
   const current = findMission(missionId);
   if (!current?.barcode) throw new Error('The mission no longer exists.');
@@ -173,6 +205,8 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
 
   const coordinates: number[][] = [];
   const pointKinds: WaypointKind[] = [];
+  /** Legs that fly straight into the next run instead of climbing over. */
+  const linkLegs: number[] = [];
   const push = (lon: number, lat: number, altitude: number, kind: WaypointKind = 'transit') => {
     const rounded = Math.round(altitude * 100) / 100;
     const last = coordinates[coordinates.length - 1];
@@ -184,9 +218,7 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
 
   const [takeoffLon, takeoffLat, takeoffGround] = takeoffPoint;
   let offset = 0;
-  legs.forEach(({ path, between }, index) => {
-    const onTheWay = sampled.slice(offset, offset + between.length);
-    offset += between.length;
+  paths.forEach((path, index) => {
     const scan = sampled.slice(offset, offset + path.points.length);
     offset += path.points.length;
     const start = scan[0];
@@ -200,8 +232,8 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
       push(takeoffLon, takeoffLat, level);
       push(start[0], start[1], level);
     } else if (flyOn(path)) {
-      // No jump: straight on at scan altitude, following the ground.
-      onTheWay.forEach(([lon, lat, altitude]) => push(lon, lat, altitude));
+      // Straight into the next run: the leg from the last barcode flown.
+      if (coordinates.length > 0) linkLegs.push(coordinates.length - 1);
     } else {
       const last = coordinates[coordinates.length - 1];
       const level = Math.max(last[2], start[2]) + settings.safeJumpM;
@@ -214,7 +246,7 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
   push(last[0], last[1], last[2] + settings.safeJumpM);
 
   useMissionStore.getState().updateMission(missionId, {
-    flightLines: [{ id: BARCODE_ROUTE_LINE_ID, coordinates, photoPoints: [], pointKinds }],
+    flightLines: [{ id: BARCODE_ROUTE_LINE_ID, coordinates, photoPoints: [], pointKinds, linkLegs }],
     barcode: { ...current.barcode, scan: { ...current.barcode.scan, routeKey: key } },
   });
 
@@ -228,6 +260,7 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
     (shared > 0 ? ` (${shared.toLocaleString()} close pairs scanned from their midpoint)` : '') +
     `, ${coordinates.length.toLocaleString()} waypoints` +
     (straightOn > 0 ? `, ${straightOn} table${straightOn === 1 ? '' : 's'} entered straight on` : '') +
+    (spikesFixed > 0 ? `, ${spikesFixed} height${spikesFixed === 1 ? '' : 's'} corrected` : '') +
     (skipped > 0 ? ` (${skipped} selected ${skipped === 1 ? 'table' : 'tables'} not found)` : '')
   );
 };

@@ -1292,3 +1292,29 @@
     transition: none !important;
   }
 }
+
+/* Barcode orientation: the colour key next to its switch */
+.bs-orientation-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--bs-faint);
+}
+
+
+/* A picked table marked by hand on the map */
+.bs-chip.is-marked {
+  border-color: #ff9f9a;
+  background: #fff1f0;
+}
+
+.bs-chip-flip {
+  padding-right: 2px;
+  color: #d92d20;
+  font-size: 10px;
+}

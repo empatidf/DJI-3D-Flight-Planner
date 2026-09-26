@@ -43,6 +43,7 @@ import {
   type ScanStartCorner,
 } from '../lib/barcode-panels';
 import {
+  BARCODE_ROUTE_LINE_ID,
   SAFE_TAKEOFF_DEFAULT_M,
   barcodeRouteKey,
   generateBarcodeScanRoute,
@@ -431,6 +432,8 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
   const flightSpeed = barcode?.scan?.flightSpeedMps ?? DEFAULT_SCAN_SPEED_MPS;
   const defaultDroneYaw = barcode?.structure?.installationBearing ?? 0;
   const droneYaw = barcode?.scan?.droneYawDeg ?? defaultDroneYaw;
+  const flippedTables = barcode?.scan?.flippedTables ?? NO_TABLES;
+  const markedTables = barcode?.scan?.markedTables ?? NO_TABLES;
   const takesPhoto = barcode?.scan?.takePhotoEnabled === true;
   const hovers = barcode?.scan?.hoverEnabled === true;
   const hoverSeconds = barcode?.scan?.hoverSeconds ?? DEFAULT_SCAN_HOVER_SECONDS;
@@ -522,20 +525,30 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
         const current = missions.find((item) => item.id === missionIdRef.current);
         const previous = current?.barcode?.structure;
         // Other detection settings can renumber the tables, so a picked table would point elsewhere.
+        const renumbered =
+          previous?.tableGapM !== next?.tableGapM || previous?.installationBearing !== next?.installationBearing;
         const clearsPicked =
-          !!current?.barcode?.scan?.tables?.length &&
-          (previous?.tableGapM !== next?.tableGapM || previous?.installationBearing !== next?.installationBearing);
+          renumbered &&
+          !!(
+            current?.barcode?.scan?.tables?.length ||
+            current?.barcode?.scan?.flippedTables?.length ||
+            current?.barcode?.scan?.markedTables?.length
+          );
         if (current?.barcode) {
           updateMission(current.id, {
             barcode: {
               ...current.barcode,
               structure: next,
-              ...(clearsPicked ? { scan: { ...current.barcode.scan, tables: [] } } : {}),
+              ...(clearsPicked
+                ? { scan: { ...current.barcode.scan, tables: [], flippedTables: [], markedTables: [] } }
+                : {}),
             },
           });
         }
         setTableGapInput((next?.tableGapM ?? parsedTableGap).toFixed(2));
-        const clearedNote = clearsPicked ? ' Table numbers may have changed, so the picked tables were cleared.' : '';
+        const clearedNote = clearsPicked
+          ? ' Table numbers may have changed, so the picked tables, inverts and colour marks were cleared.'
+          : '';
         setStatus(
           next
             ? {
@@ -746,6 +759,18 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
     } finally {
       setIsExporting(false);
     }
+  };
+
+  /** Starting over: the picked tables go, and with them the route drawn from them. */
+  const clearTables = () => {
+    const { missions, updateMission } = useMissionStore.getState();
+    const current = missions.find((item) => item.id === missionIdRef.current);
+    if (!current?.barcode) return;
+    updateMission(current.id, {
+      flightLines: current.flightLines.filter((line) => line.id !== BARCODE_ROUTE_LINE_ID),
+      barcode: { ...current.barcode, scan: { ...current.barcode.scan, tables: [], routeKey: undefined } },
+    });
+    setRouteMessage(null);
   };
 
   const clearRoute = () => {
@@ -1179,6 +1204,46 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
               <output className="bs-value">{Math.round(style.fillOpacity * 100)} %</output>
             </div>
 
+            <div className="bs-style is-wide">
+              <span className="bs-style-check" title="Draw the strings in their own colours instead of the outline colour. Right-click a string on the map to mark it with the second colour; what a mark means is up to you.">
+                Strings
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={style.stringColorsEnabled}
+                className={`bs-switch bs-switch-bare${style.stringColorsEnabled ? ' is-on' : ''}`}
+                onClick={() => updateStyle({ stringColorsEnabled: !style.stringColorsEnabled })}
+              >
+                <span className="bs-switch-track" aria-hidden="true">
+                  <span className="bs-switch-knob" />
+                </span>
+                <span className="bs-switch-text">{style.stringColorsEnabled ? 'On' : 'Off'}</span>
+              </button>
+              <input
+                type="color"
+                className="bs-swatch"
+                value={style.stringColor}
+                onChange={(e) => updateStyle({ stringColor: e.target.value })}
+                disabled={!style.stringColorsEnabled}
+                aria-label="Colour of the strings"
+                title="Strings"
+              />
+              <input
+                type="color"
+                className="bs-swatch"
+                value={style.markedStringColor}
+                onChange={(e) => updateStyle({ markedStringColor: e.target.value })}
+                disabled={!style.stringColorsEnabled}
+                aria-label="Colour of the strings marked by hand"
+                title="Marked strings"
+              />
+              <span className="bs-orientation-key">
+                {markedTables.length > 0 ? `${markedTables.length} marked` : 'none marked'}
+                {flippedTables.length > 0 ? ` · ${flippedTables.length} inverted` : ''}
+              </span>
+            </div>
+
             <div className={`bs-style is-wide${barcode.label && !style.barcodeEnabled ? ' is-off' : ''}`}>
               <label className="bs-style-check" title={barcode.label ? describeBarcodeLabel(barcode.label) : undefined}>
                 <input
@@ -1444,7 +1509,12 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
                 ))}
               </div>
               {hasPickedTables && (
-                <button type="button" className="bs-text-btn" onClick={() => updateScan({ tables: [] })}>
+                <button
+                  type="button"
+                  className="bs-text-btn"
+                  onClick={clearTables}
+                  title={route ? 'Remove the picked tables and the generated route' : 'Remove the picked tables'}
+                >
                   Clear
                 </button>
               )}
@@ -1472,15 +1542,18 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
                   return (
                     <li
                       key={number}
-                      className={`bs-chip${table ? '' : ' is-missing'}`}
+                      className={`bs-chip${table ? '' : ' is-missing'}${markedTables.includes(number) ? ' is-marked' : ''}`}
                       title={
                         table
-                          ? `Table ${number}: ${table.panels} barcodes, no. ${index + 1} in flight order`
+                          ? `Table ${number}: ${table.panels} barcodes, no. ${index + 1} in flight order${
+                              flippedTables.includes(number) ? ', inverted' : ''
+                            }${markedTables.includes(number) ? ', marked' : ''}`
                           : `Table ${number} was not found`
                       }
                     >
                       <span className="bs-chip-order">{index + 1}</span>
                       <span className="bs-chip-name">{number}</span>
+                      {flippedTables.includes(number) && <span className="bs-chip-flip" aria-hidden="true">↕</span>}
                       <button
                         type="button"
                         className="bs-chip-btn"
