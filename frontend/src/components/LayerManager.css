@@ -352,6 +352,11 @@
   color: #b45309;
 }
 
+/* Re-opening the file on its own: not something the user has to act on */
+.layer-restore-hint.is-opening {
+  color: #0d6efd;
+}
+
 .layer-restore .btn-action {
   padding: 4px 10px;
   font-size: 12px;

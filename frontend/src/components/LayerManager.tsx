@@ -9,12 +9,14 @@ import { fetchCesiumAssets, filterImageryAssets, getAssetMetadata, validateCesiu
 import { getIonAssetBounds, type IonAssetType } from '../lib/ion-asset-bounds';
 import {
   buildLocalLayer,
+  getLocalOpenState,
   getLocalRegistryVersion,
   hasLocalEntry,
   setLocalEntry,
   subscribeLocalRegistry,
   type LocalLayerKind,
 } from '../lib/local-tiff/registry';
+import { forgetAutoOpenAttempt } from '../lib/local-tiff/auto-open';
 import {
   deleteHandle,
   ensurePermission,
@@ -304,8 +306,8 @@ export const LayerManager = () => {
   };
 
   /**
-   * Re-open a layer's file after a reload. Runs from a click because Chrome
-   * needs a user gesture to re-grant read access to a stored handle.
+   * Re-open a layer's file from a click: Chrome needs a user gesture to
+   * re-grant read access, and a file that moved can be picked again.
    */
   const handleRestoreLocal = async (layer: Layer) => {
     setIsLoadingLocal(true);
@@ -336,6 +338,7 @@ export const LayerManager = () => {
         setLocalStatus({ type: 'info', message })
       );
       setLocalEntry(layer.id, entry);
+      forgetAutoOpenAttempt(layer.id);
       setLocalStatus({ type: 'success', message: entry.summary });
     } catch (error) {
       console.error('Failed to restore local GeoTIFF:', error);
@@ -449,15 +452,29 @@ export const LayerManager = () => {
                 the reload but the raster did not. */}
             {layer.type === 'local-tiff' && !hasLocalEntry(layer.id) && (
               <div className="layer-controls layer-restore">
-                <span className="layer-restore-hint">File not loaded</span>
-                <button
-                  className="btn-action"
-                  onClick={() => handleRestoreLocal(layer)}
-                  disabled={isLoadingLocal}
-                  title={`Re-open ${layer.localFileName ?? layer.name}`}
+                <span
+                  className={`layer-restore-hint${getLocalOpenState(layer.id) === 'opening' ? ' is-opening' : ''}`}
                 >
-                  Restore
-                </button>
+                  {getLocalOpenState(layer.id) === 'opening'
+                    ? 'Opening file…'
+                    : getLocalOpenState(layer.id) === 'missing'
+                      ? 'File not found'
+                      : 'File not loaded'}
+                </span>
+                {getLocalOpenState(layer.id) !== 'opening' && (
+                  <button
+                    className="btn-action"
+                    onClick={() => handleRestoreLocal(layer)}
+                    disabled={isLoadingLocal}
+                    title={
+                      getLocalOpenState(layer.id) === 'missing'
+                        ? `Pick ${layer.localFileName ?? layer.name} again`
+                        : `Re-open ${layer.localFileName ?? layer.name}`
+                    }
+                  >
+                    {getLocalOpenState(layer.id) === 'missing' ? 'Locate…' : 'Restore'}
+                  </button>
+                )}
               </div>
             )}
 

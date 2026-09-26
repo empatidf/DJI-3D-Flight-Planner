@@ -49,6 +49,24 @@ export const getLocalRegistryVersion = (): number => version;
 export const getLocalEntry = (layerId: string): LocalLayerEntry | undefined =>
   entries.get(layerId);
 
+/**
+ * How re-opening a layer's file after a reload is going (see auto-open):
+ * `opening` while it is being decoded, `needs-click` when the browser wants a
+ * user gesture, `missing` when the file is no longer where it was picked.
+ */
+export type LocalOpenState = 'opening' | 'needs-click' | 'missing';
+
+const openStates = new Map<string, LocalOpenState>();
+
+export const getLocalOpenState = (layerId: string): LocalOpenState | undefined =>
+  openStates.get(layerId);
+
+export const setLocalOpenState = (layerId: string, state: LocalOpenState | null): void => {
+  if (state === null) openStates.delete(layerId);
+  else openStates.set(layerId, state);
+  emit();
+};
+
 export const hasLocalEntry = (layerId: string): boolean => entries.has(layerId);
 
 export const setLocalEntry = (layerId: string, entry: LocalLayerEntry): void => {
