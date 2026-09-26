@@ -16,6 +16,7 @@ import {
   BARCODE_LABEL_WIDTH_M,
   BARCODE_SLOTS,
   COMPASS_SIDE_LABELS,
+  DEFAULT_CORNER_INSET_M,
   DEFAULT_LABEL_INSET_M,
   defaultTopEdge,
   labelInsets,
@@ -93,6 +94,8 @@ export const BarcodePositionDialog = ({
   const [countAlong, setCountAlong] = useState<BarcodeLabelSettings['countAlong']>(initial?.countAlong ?? 'forward');
   const [upsideDown, setUpsideDown] = useState(initial?.upsideDown ?? false);
   const [resetOnGap, setResetOnGap] = useState(initial?.resetOnGap ?? false);
+  const [fourCorners, setFourCorners] = useState(initial?.fourCorners ?? false);
+  const [cornerInsetCm, setCornerInsetCm] = useState(() => formatCm(initial?.cornerInsetM ?? DEFAULT_CORNER_INSET_M));
   const [insetEndCm, setInsetEndCm] = useState(() => formatCm(labelInsets(initial ?? {}).fromEndM));
   const [insetSideCm, setInsetSideCm] = useState(() => formatCm(labelInsets(initial ?? {}).fromSideM));
 
@@ -109,10 +112,19 @@ export const BarcodePositionDialog = ({
   const maxSideCm = Math.floor(((panelSize.width - BARCODE_LABEL_WIDTH_M) / 2) * 100);
   const endCm = parseCm(insetEndCm, maxEndCm);
   const sideCm = parseCm(insetSideCm, maxSideCm);
-  const isInsetValid = endCm !== null && sideCm !== null;
+  // The extra inset may pull a point at most to the middle of the module.
+  const maxCornerCm = Math.floor((Math.max(panelSize.length, panelSize.width) / 2) * 100);
+  const cornerCm = parseCm(cornerInsetCm, maxCornerCm);
+  const isInsetValid = endCm !== null && sideCm !== null && (!fourCorners || cornerCm !== null);
   const insets = {
     fromEndM: endCm !== null ? endCm / 100 : DEFAULT_LABEL_INSET_M,
     fromSideM: sideCm !== null ? sideCm / 100 : DEFAULT_LABEL_INSET_M,
+  };
+
+  const cornerInsetM = (cornerCm ?? DEFAULT_CORNER_INSET_M * 100) / 100;
+  const cornerPreviewInsets = {
+    fromEndM: insets.fromEndM + cornerInsetM,
+    fromSideM: insets.fromSideM + cornerInsetM,
   };
 
   const forwardCourse = structure.installationBearing;
@@ -128,6 +140,10 @@ export const BarcodePositionDialog = ({
       resetOnGap: upsideDown && resetOnGap,
       insetFromEndM: insets.fromEndM,
       insetFromSideM: insets.fromSideM,
+      fourCorners,
+      cornerInsetM: (cornerCm ?? DEFAULT_CORNER_INSET_M * 100) / 100,
+      // Set in the Flight Planning panel, next to the string gap.
+      nextPanelGapM: initial?.nextPanelGapM,
     });
   };
 
@@ -161,6 +177,41 @@ export const BarcodePositionDialog = ({
       (afterBreak ? patternBreak - PATTERN_GAP_PX : 0);
     return { x, flipped: upsideDown && sequence % 2 === 1 };
   });
+
+  /**
+   * Where the points sit along the pattern strip: one per label in the normal
+   * mode, or the kept corners in 4 Corner Mode — one on every shared border,
+   * and the outer ends inset from the edge.
+   */
+  const patternPoints: { x: number; y: number }[] = [];
+  if (fourCorners) {
+    const endInset = (insets.fromSideM + cornerInsetM) * patternScale;
+    const sideInset = (insets.fromEndM + cornerInsetM) * patternScale;
+    const top = patternY0 + sideInset;
+    const bottom = patternY0 + PATTERN_MODULE_HEIGHT - sideInset;
+    patternModules.forEach((module, index) => {
+      const next = patternModules[index + 1];
+      const touchesNext = !!next && index + 1 !== PATTERN_BREAK_AFTER;
+      if (index === 0 || index === PATTERN_BREAK_AFTER) {
+        for (const y of [top, bottom]) patternPoints.push({ x: module.x + endInset, y });
+      }
+      const right = module.x + patternModuleWidth;
+      // A shared border carries one point; a break gives each module its own.
+      const x = touchesNext ? (right + next.x) / 2 : right - endInset;
+      for (const y of [top, bottom]) patternPoints.push({ x, y });
+      if (!touchesNext && next) {
+        for (const y of [top, bottom]) patternPoints.push({ x: next.x + endInset, y });
+      }
+    });
+  } else {
+    patternModules.forEach((module) => {
+      const offset = slotOffset(slot, module.flipped, panelSize, insets);
+      patternPoints.push({
+        x: module.x + patternModuleWidth / 2 - offset.alongLeftM * patternScale,
+        y: patternY0 + PATTERN_MODULE_HEIGHT / 2 - offset.alongTopM * patternScale,
+      });
+    });
+  }
 
   return createPortal(
     <div
@@ -218,29 +269,32 @@ export const BarcodePositionDialog = ({
               ))}
 
               {/* Barcode spots */}
-              {BARCODE_SLOTS.map((option) => {
-                const offset = slotOffset(option.id, false, panelSize, insets);
+              {BARCODE_SLOTS.filter((option) => !fourCorners || !option.id.endsWith('middle')).map((option) => {
+                // A single module has no neighbours, so every corner is pulled in.
+                const offset = slotOffset(option.id, false, panelSize, fourCorners ? cornerPreviewInsets : insets);
                 const x = centerX - offset.alongLeftM * scale;
                 const y = centerY - offset.alongTopM * scale;
-                const selected = option.id === slot;
+                // In 4 Corner Mode every corner carries a point and nothing is chosen.
+                const selected = fourCorners || option.id === slot;
                 return (
                   <g
                     key={option.id}
-                    className={`bpd-slot${selected ? ' is-selected' : ''}`}
-                    role="radio"
-                    aria-checked={selected}
-                    aria-label={option.label}
-                    tabIndex={0}
-                    onClick={() => setSlot(option.id)}
+                    className={`bpd-slot${selected ? ' is-selected' : ''}${fourCorners ? ' is-fixed' : ''}`}
+                    role={fourCorners ? undefined : 'radio'}
+                    aria-checked={fourCorners ? undefined : selected}
+                    aria-label={fourCorners ? undefined : option.label}
+                    tabIndex={fourCorners ? undefined : 0}
+                    onClick={fourCorners ? undefined : () => setSlot(option.id)}
                     onKeyDown={(event) => {
+                      if (fourCorners) return;
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         setSlot(option.id);
                       }
                     }}
                   >
-                    <title>{option.label}</title>
-                    <rect x={x - 22} y={y - 16} width="44" height="32" className="bpd-slot-hit" />
+                    <title>{fourCorners ? 'Corner point' : option.label}</title>
+                    {!fourCorners && <rect x={x - 22} y={y - 16} width="44" height="32" className="bpd-slot-hit" />}
                     <rect
                       x={x - labelWidthPx / 2}
                       y={y - labelDepthPx / 2}
@@ -291,7 +345,59 @@ export const BarcodePositionDialog = ({
           </figure>
 
           <div className="bpd-controls">
-            <fieldset className="bpd-field">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={fourCorners}
+              className={`bpd-mode${fourCorners ? ' is-on' : ''}`}
+              onClick={() => setFourCorners(!fourCorners)}
+            >
+              <span className="bpd-mode-track" aria-hidden="true">
+                <span className="bpd-mode-knob" />
+              </span>
+              <span className="bpd-mode-text">
+                <strong>4 Corner Mode</strong>
+                <span>
+                  A point at every module corner, for sites where the labels follow no readable pattern. Corners of
+                  modules that touch become one point on their shared border.
+                </span>
+              </span>
+            </button>
+
+            {fourCorners ? (
+              <>
+                <p className="bpd-note">
+                  The label spot, top edge, counting direction and upside-down settings are not used in this mode. Set
+                  how close modules must be to share a point with “Next panel gap” in the Flight Planning panel.
+                </p>
+                <fieldset className="bpd-field">
+                  <legend>Corner panel inset</legend>
+                  <div className="bpd-inset-row">
+                    <label className="bpd-inset">
+                      <span className="bpd-inset-label">Outer points</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max={maxCornerCm}
+                        step="1"
+                        inputMode="numeric"
+                        aria-label="Extra inset of the points on a free module edge, in centimetres"
+                        value={cornerInsetCm}
+                        onChange={(e) => setCornerInsetCm(e.target.value)}
+                      />
+                      <span className="bpd-inset-unit">cm</span>
+                    </label>
+                  </div>
+                  <p className="bpd-hint">
+                    {cornerCm !== null
+                      ? 'Points on a module edge without a neighbour move this much further inside. Shared borders keep their point on the joint.'
+                      : `Enter 0–${maxCornerCm} cm.`}
+                  </p>
+                </fieldset>
+              </>
+            ) : (
+              <>
+                <fieldset className="bpd-field">
               <legend>Label spot</legend>
               <div className="bpd-slot-grid" role="radiogroup" aria-label="Label spot">
                 {BARCODE_SLOTS.map((option) => (
@@ -375,6 +481,9 @@ export const BarcodePositionDialog = ({
               </span>
             </label>
 
+            </>
+            )}
+
             <fieldset className="bpd-field">
               <legend>Inset from edges</legend>
               <div className="bpd-insets">
@@ -431,40 +540,39 @@ export const BarcodePositionDialog = ({
             </fieldset>
 
             <div className="bpd-pattern">
-              <span className="bpd-pattern-title">Row pattern</span>
+              <span className="bpd-pattern-title">{fourCorners ? 'Corner points' : 'Row pattern'}</span>
               <svg viewBox={`0 0 ${PATTERN_WIDTH} ${PATTERN_HEIGHT}`} role="img" aria-label="Barcode spots along one row">
                 <text x={patternX0} y="12" className="bpd-pattern-dir">
-                  → along {(countAlong === 'forward' ? forwardCourse : reverseCourse).toFixed(1)}°
+                  {fourCorners
+                    ? 'corners, shared borders merged'
+                    : `→ along ${(countAlong === 'forward' ? forwardCourse : reverseCourse).toFixed(1)}°`}
                 </text>
                 <text x={patternModules[PATTERN_BREAK_AFTER].x - 8} y="12" textAnchor="middle" className="bpd-pattern-gap">
                   gap
                 </text>
-                {patternModules.map((module, index) => {
-                  const offset = slotOffset(slot, module.flipped, panelSize, insets);
-                  const cx = module.x + patternModuleWidth / 2 - offset.alongLeftM * patternScale;
-                  const cy = patternY0 + PATTERN_MODULE_HEIGHT / 2 - offset.alongTopM * patternScale;
-                  return (
-                    <g key={index}>
-                      <rect
-                        x={module.x}
-                        y={patternY0}
-                        width={patternModuleWidth}
-                        height={PATTERN_MODULE_HEIGHT}
-                        rx="1.5"
-                        className={`bpd-pattern-module${module.flipped ? ' is-flipped' : ''}`}
-                      />
-                      <BarcodeSymbolShape
-                        symbol={barcodeSymbol}
-                        cx={cx}
-                        cy={cy}
-                        size={6}
-                        fill={barcodeColor}
-                        stroke="#fff"
-                        strokeWidth={0.8}
-                      />
-                    </g>
-                  );
-                })}
+                {patternModules.map((module, index) => (
+                  <rect
+                    key={`m${index}`}
+                    x={module.x}
+                    y={patternY0}
+                    width={patternModuleWidth}
+                    height={PATTERN_MODULE_HEIGHT}
+                    rx="1.5"
+                    className={`bpd-pattern-module${module.flipped ? ' is-flipped' : ''}`}
+                  />
+                ))}
+                {patternPoints.map((point, index) => (
+                  <BarcodeSymbolShape
+                    key={`p${index}`}
+                    symbol={barcodeSymbol}
+                    cx={point.x}
+                    cy={point.y}
+                    size={6}
+                    fill={barcodeColor}
+                    stroke="#fff"
+                    strokeWidth={0.8}
+                  />
+                ))}
               </svg>
             </div>
           </div>

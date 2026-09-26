@@ -9,6 +9,7 @@ import { fetchCesiumAssets, filterImageryAssets, getAssetMetadata, validateCesiu
 import { getIonAssetBounds, type IonAssetType } from '../lib/ion-asset-bounds';
 import {
   buildLocalLayer,
+  getLocalEntry,
   getLocalOpenState,
   getLocalRegistryVersion,
   hasLocalEntry,
@@ -365,6 +366,12 @@ export const LayerManager = () => {
     setLocalStatus({ type: 'info', message: 'Local files unloaded' });
   };
 
+  /** Frame one local file: its own extent, or the bounds saved with the layer. */
+  const handleZoomToLocalLayer = (layer: Layer) => {
+    const bounds = getLocalEntry(layer.id)?.extent ?? layer.localBounds;
+    if (bounds) flyToBounds(bounds);
+  };
+
   const handleZoomToLocalData = () => {
     const target = localLayers.find((layer) => layer.visible && layer.localBounds)
       ?? localLayers.find((layer) => layer.localBounds);
@@ -419,6 +426,21 @@ export const LayerManager = () => {
                   </span>
                 )}
               </label>
+
+              {layer.type === 'local-tiff' && (layer.localBounds || getLocalEntry(layer.id)) && (
+                <button
+                  className="layer-zoom-btn"
+                  onClick={() => handleZoomToLocalLayer(layer)}
+                  title="Center the map on this file"
+                  aria-label={`Center the map on ${layer.localFileName ?? layer.name}`}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                    <circle cx="8" cy="8" r="4.5" />
+                    <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
+                    <path d="M8 0.5v3M8 12.5v3M0.5 8h3M12.5 8h3" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
 
               {layer.type === 'cesium-ion' && Number.isFinite(Number(layer.cesiumAssetId)) && (
                 <button

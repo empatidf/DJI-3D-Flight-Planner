@@ -25,6 +25,13 @@ export const SAFE_TAKEOFF_DEFAULT_M = 20;
 const METERS_PER_DEGREE_LAT = 110574;
 const METERS_PER_DEGREE_LON_AT_EQUATOR = 111320;
 
+/**
+ * Longest straight-on leg flown between two barcodes without a point in
+ * between. At scan altitude the aircraft is less than a metre over the
+ * panels, so a long leg follows the ground instead of cutting across it.
+ */
+const STRAIGHT_LEG_STEP_M = 10;
+
 /** Settings of the scan route with their defaults applied. */
 export const barcodeRouteSettings = (mission: Mission) => {
   const scan = mission.barcode?.scan;
@@ -97,12 +104,16 @@ const findMission = (missionId: string) => useMissionStore.getState().missions.f
 /**
  * Build the scan route and store it as the mission's flight line.
  *
- * 1. Takeoff: climb above the takeoff point to the safe takeoff height (higher
- *    if the first barcode plus the safe jump needs it) and fly level to above
- *    the first barcode.
+ * 1. Takeoff: climb to the safe takeoff height over the takeoff point and over
+ *    the first barcode — the higher ground of the two decides — fly level to
+ *    above the first barcode and descend onto it. The safe jump plays no part
+ *    here; it is only used from string to string.
  * 2. Each table: every barcode at terrain + scan altitude, in scan order.
  * 3. Next table: climb by the safe jump over the last barcode (or over the next
  *    table's first barcode, if that one is higher), fly level, descend onto it.
+ *    A table that starts straight ahead in the same line needs none of that,
+ *    and neither does any table when the safe jump is 0: the aircraft flies on
+ *    at scan altitude (see continuesAhead).
  * 4. After the last barcode: climb by the safe jump, clear of the panels.
  */
 export const generateBarcodeScanRoute = async (missionId: string): Promise<string> => {
@@ -132,7 +143,28 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
   });
   if (paths.length === 0) throw new Error('None of the selected tables has barcode positions.');
 
-  const scanPoints = paths.flatMap((path) => path.points.map(([lon, lat]) => [lon, lat, 0]));
+  // A table reached without a jump — straight ahead, or with the safe jump set
+  // to 0 — is flown at scan altitude. Long legs get points in between so they
+  // keep their height over the ground.
+  const flyOn = (path: (typeof paths)[number]) => path.continuesAhead || settings.safeJumpM <= 0;
+  const legs = paths.map((path, index) => {
+    const previous = index > 0 ? paths[index - 1].points[paths[index - 1].points.length - 1] : null;
+    const between: [number, number][] = [];
+    if (previous && flyOn(path)) {
+      const [fromLon, fromLat] = previous;
+      const [toLon, toLat] = path.points[0];
+      const kx = METERS_PER_DEGREE_LON_AT_EQUATOR * Math.cos((toLat * Math.PI) / 180);
+      const metres = Math.hypot((toLon - fromLon) * kx, (toLat - fromLat) * METERS_PER_DEGREE_LAT);
+      const steps = Math.floor(metres / STRAIGHT_LEG_STEP_M);
+      for (let step = 1; step <= steps; step++) {
+        const t = step / (steps + 1);
+        between.push([fromLon + (toLon - fromLon) * t, fromLat + (toLat - fromLat) * t]);
+      }
+    }
+    return { path, between };
+  });
+
+  const scanPoints = legs.flatMap((leg) => [...leg.between, ...leg.path.points].map(([lon, lat]) => [lon, lat, 0]));
   const sampled = await sampleTerrainForWaypoints(viewer, scanPoints, settings.scanAltitudeM);
 
   const current = findMission(missionId);
@@ -152,15 +184,24 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
 
   const [takeoffLon, takeoffLat, takeoffGround] = takeoffPoint;
   let offset = 0;
-  paths.forEach((path, index) => {
+  legs.forEach(({ path, between }, index) => {
+    const onTheWay = sampled.slice(offset, offset + between.length);
+    offset += between.length;
     const scan = sampled.slice(offset, offset + path.points.length);
     offset += path.points.length;
     const start = scan[0];
 
     if (index === 0) {
-      const level = Math.max(takeoffGround + settings.safeTakeoffM, start[2] + settings.safeJumpM);
+      // Safe takeoff is kept over the takeoff point and over the first barcode:
+      // the aircraft climbs, crosses at that height and drops onto the barcode.
+      // It applies to this leg whatever the safe jump is.
+      const firstGround = start[2] - settings.scanAltitudeM;
+      const level = Math.max(takeoffGround, firstGround) + settings.safeTakeoffM;
       push(takeoffLon, takeoffLat, level);
       push(start[0], start[1], level);
+    } else if (flyOn(path)) {
+      // No jump: straight on at scan altitude, following the ground.
+      onTheWay.forEach(([lon, lat, altitude]) => push(lon, lat, altitude));
     } else {
       const last = coordinates[coordinates.length - 1];
       const level = Math.max(last[2], start[2]) + settings.safeJumpM;
@@ -177,14 +218,16 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
     barcode: { ...current.barcode, scan: { ...current.barcode.scan, routeKey: key } },
   });
 
+  const straightOn = paths.filter((path, index) => index > 0 && flyOn(path)).length;
   const barcodes = paths.reduce((sum, path) => sum + path.barcodes, 0);
-  const shared = barcodes - scanPoints.length;
+  const shared = barcodes - paths.reduce((sum, path) => sum + path.points.length, 0);
   const skipped = settings.tables.length - paths.length;
   return (
     `Route generated: ${paths.length} ${paths.length === 1 ? 'table' : 'tables'}, ` +
-    `${barcodes.toLocaleString()} barcodes from ${scanPoints.length.toLocaleString()} scan points` +
+    `${barcodes.toLocaleString()} barcodes from ${paths.reduce((sum, path) => sum + path.points.length, 0).toLocaleString()} scan points` +
     (shared > 0 ? ` (${shared.toLocaleString()} close pairs scanned from their midpoint)` : '') +
     `, ${coordinates.length.toLocaleString()} waypoints` +
+    (straightOn > 0 ? `, ${straightOn} table${straightOn === 1 ? '' : 's'} entered straight on` : '') +
     (skipped > 0 ? ` (${skipped} selected ${skipped === 1 ? 'table' : 'tables'} not found)` : '')
   );
 };

@@ -18,7 +18,9 @@ import {
   DEFAULT_SCAN_ALTITUDE_M,
   DEFAULT_SCAN_HOVER_SECONDS,
   DEFAULT_SCAN_SPEED_MPS,
+  DEFAULT_NEXT_PANEL_GAP_M,
   DEFAULT_SCAN_START_CORNER,
+  MAX_NEXT_PANEL_GAP_M,
   MAX_TABLE_GAP_M,
   SCAN_START_CORNERS,
   analysePanelStructure,
@@ -307,6 +309,25 @@ const TablePreview = ({
   const y0 = (PREVIEW_HEIGHT - drawnHeight) / 2;
   const strokeWidth = Math.min(Math.max(0.6, style.outlineWidth * 0.5), alongPx / 3);
 
+  // 4 Corner Mode: one point per module border, the outer ones inset.
+  const cornerPreviewPoints: { x: number; y: number }[] = [];
+  if (label?.fourCorners) {
+    const insets = labelInsets(label);
+    const alongInset = (portrait ? insets.fromSideM : insets.fromEndM) * scale;
+    const acrossInset = (portrait ? insets.fromEndM : insets.fromSideM) * scale;
+    const xs = [
+      x0 + alongInset,
+      ...Array.from({ length: columns - 1 }, (_, i) => x0 + (i + 1) * (alongPx + gapPx) - gapPx / 2),
+      x0 + drawnWidth - alongInset,
+    ];
+    const ys = [
+      y0 + acrossInset,
+      ...Array.from({ length: structure.rows - 1 }, (_, i) => y0 + (i + 1) * (acrossPx + gapPx) - gapPx / 2),
+      y0 + drawnHeight - acrossInset,
+    ];
+    for (const x of xs) for (const y of ys) cornerPreviewPoints.push({ x, y });
+  }
+
   return (
     <svg
       className="bs-preview"
@@ -336,7 +357,23 @@ const TablePreview = ({
           />
         ))
       )}
+      {label?.fourCorners &&
+        style.barcodeEnabled &&
+        cornerPreviewPoints.map((point, index) => (
+          <BarcodeSymbolShape
+            key={`corner-${index}`}
+            symbol={style.barcodeSymbol}
+            cx={point.x}
+            cy={point.y}
+            size={Math.max(2.5, Math.min(style.barcodeSize * 0.6, alongPx * 0.7))}
+            angle={portrait ? 0 : 90}
+            fill={style.barcodeColor}
+            stroke="rgba(0, 0, 0, 0.5)"
+            strokeWidth={0.6}
+          />
+        ))}
       {label &&
+        !label.fourCorners &&
         style.barcodeEnabled &&
         Array.from({ length: structure.rows }, (_, row) =>
           Array.from({ length: columns }, (_, column) => {
@@ -399,6 +436,9 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
   const hoverSeconds = barcode?.scan?.hoverSeconds ?? DEFAULT_SCAN_HOVER_SECONDS;
   const [tableGapInput, setTableGapInput] = useState(() =>
     (barcode?.structure?.tableGapM ?? barcode?.panelSize.width ?? 1).toFixed(2)
+  );
+  const [nextGapInput, setNextGapInput] = useState(() =>
+    (barcode?.label?.nextPanelGapM ?? DEFAULT_NEXT_PANEL_GAP_M).toFixed(2)
   );
 
   const missionIdRef = useRef(mission.id);
@@ -600,6 +640,26 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
     const camera = barcodeCameras(mission.drone.id).find((item) => item.id === cameraId);
     if (!camera) return;
     useMissionStore.getState().updateMission(missionIdRef.current, { camera });
+  };
+
+  const parsedNextGap = Number(nextGapInput.replace(',', '.'));
+  const isNextGapValid =
+    nextGapInput.trim() !== '' && Number.isFinite(parsedNextGap) && parsedNextGap >= 0 && parsedNextGap <= MAX_NEXT_PANEL_GAP_M;
+
+  /** Stored with the barcode position, which is what the points are built from. */
+  const saveNextPanelGap = () => {
+    const { missions, updateMission } = useMissionStore.getState();
+    const current = missions.find((item) => item.id === missionIdRef.current);
+    const label = current?.barcode?.label;
+    if (!current?.barcode || !label) return;
+    if (!isNextGapValid) {
+      setNextGapInput((label.nextPanelGapM ?? DEFAULT_NEXT_PANEL_GAP_M).toFixed(2));
+      return;
+    }
+    const meters = Math.round(parsedNextGap * 100) / 100;
+    setNextGapInput(meters.toFixed(2));
+    if ((label.nextPanelGapM ?? DEFAULT_NEXT_PANEL_GAP_M) === meters) return;
+    updateMission(current.id, { barcode: { ...current.barcode, label: { ...label, nextPanelGapM: meters } } });
   };
 
   const toggleTableSelection = () => {
@@ -972,6 +1032,46 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
                 >
                   {isRecalculating ? 'Working…' : 'Recalculate'}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {hasPanels && barcode && (
+            <div className="bs-row">
+              <label
+                className="bs-row-label"
+                htmlFor={`${tableGapInputId}-next-panel`}
+                title="4 Corner Mode: modules whose edges are this close share one point on their border."
+              >
+                Next panel gap
+              </label>
+              <div className="bs-row-controls">
+                <span className={`bs-number${isNextGapValid ? '' : ' is-invalid'}${barcode.label ? '' : ' is-disabled'}`}>
+                  <input
+                    id={`${tableGapInputId}-next-panel`}
+                    type="number"
+                    min="0"
+                    max={MAX_NEXT_PANEL_GAP_M}
+                    step="0.05"
+                    value={nextGapInput}
+                    disabled={!barcode.label}
+                    aria-invalid={!isNextGapValid}
+                    title={
+                      barcode.label
+                        ? 'Largest gap between two modules that still share a barcode point'
+                        : 'Set the barcode position first'
+                    }
+                    onChange={(e) => setNextGapInput(e.target.value)}
+                    onBlur={saveNextPanelGap}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') saveNextPanelGap();
+                    }}
+                  />
+                  <span className="bs-unit">m</span>
+                </span>
+                <span className="bs-muted bs-grow">
+                  {barcode.label?.fourCorners ? '4 Corner Mode' : 'Used by 4 Corner Mode'}
+                </span>
               </div>
             </div>
           )}

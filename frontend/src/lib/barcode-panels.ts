@@ -162,7 +162,44 @@ export interface BarcodeLabelSettings {
   insetFromSideM: number;
   /** @deprecated One inset for both directions, stored by earlier versions; read through labelInsets(). */
   insetM?: number;
+  /**
+   * 4 Corner Mode: a point at every module corner instead of one label spot,
+   * for sites where the labels do not follow a readable pattern. Corners of
+   * modules that touch become one point on their shared border.
+   */
+  fourCorners?: boolean;
+  /** Modules with an edge-to-edge gap up to this share their corner points, meters. */
+  nextPanelGapM?: number;
+  /**
+   * Extra inset for points on a module edge with no neighbour — the ends of a
+   * string and the outer sides — so they do not sit on the very rim, meters.
+   */
+  cornerInsetM?: number;
 }
+
+/** Points one panel can carry: one label spot, or its four corners. */
+export const BARCODE_POINT_SLOTS = 4;
+const BARCODE_POINT_STRIDE = BARCODE_POINT_SLOTS * 2;
+
+/** Default edge-to-edge gap up to which two modules count as touching. */
+export const DEFAULT_NEXT_PANEL_GAP_M = 0.15;
+/** Default extra inset of the points on a free module edge (4 Corner Mode). */
+export const DEFAULT_CORNER_INSET_M = 0.2;
+export const MAX_NEXT_PANEL_GAP_M = 5;
+
+/** Every point of one panel: up to BARCODE_POINT_SLOTS, unused slots are NaN. */
+export const forEachBarcodePoint = (
+  points: Float64Array,
+  panel: number,
+  visit: (lon: number, lat: number, slot: number) => void
+): void => {
+  for (let slot = 0; slot < BARCODE_POINT_SLOTS; slot++) {
+    const offset = panel * BARCODE_POINT_STRIDE + slot * 2;
+    const lon = points[offset];
+    const lat = points[offset + 1];
+    if (Number.isFinite(lon) && Number.isFinite(lat)) visit(lon, lat, slot);
+  }
+};
 
 export interface LabelInsets {
   /** from the top/bottom (short) edge, meters */
@@ -213,8 +250,12 @@ export const defaultTopEdge = (structure: PanelStructure, latitude: number): Com
   return 'west';
 };
 
-export const describeBarcodeLabel = (settings: BarcodeLabelSettings) =>
-  [
+export const describeBarcodeLabel = (settings: BarcodeLabelSettings): string =>
+  settings.fourCorners
+    ? `4 corner mode, shared borders merged up to ${Math.round(
+        (settings.nextPanelGapM ?? DEFAULT_NEXT_PANEL_GAP_M) * 100
+      )} cm, outer points ${Math.round((settings.cornerInsetM ?? DEFAULT_CORNER_INSET_M) * 100)} cm further in`
+    : [
     BARCODE_SLOTS.find((option) => option.id === settings.slot)?.label.toLowerCase() ?? settings.slot,
     `top edge faces ${COMPASS_SIDE_LABELS[settings.topEdge].toLowerCase()}`,
     settings.upsideDown ? 'alternating upside-down' : null,
@@ -613,6 +654,53 @@ const groupTables = (modules: ModuleGeometry, gapBesideM: number, gapEndToEndM: 
   return tables;
 };
 
+/**
+ * Every pair of modules that touch, i.e. whose edges are at most `gapM` apart.
+ * Same neighbour test as groupTables, but the pairs themselves are needed to
+ * merge the corner points they share.
+ */
+const forEachAdjacentPair = (
+  modules: ModuleGeometry,
+  gapM: number,
+  visit: (a: number, b: number) => void
+) => {
+  const { count, centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
+  const cellSize = modules.maxLongSide + gapM;
+  const cellKey = (gx: number, gy: number) => (gx + 1e6) * 4e6 + (gy + 1e6);
+  const cellX = new Int32Array(count);
+  const cellY = new Int32Array(count);
+  const buckets = new Map<number, number[]>();
+  for (let panel = 0; panel < count; panel++) {
+    cellX[panel] = Math.floor(centerX[panel] / cellSize);
+    cellY[panel] = Math.floor(centerY[panel] / cellSize);
+    const key = cellKey(cellX[panel], cellY[panel]);
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(panel);
+    else buckets.set(key, [panel]);
+  }
+
+  for (let i = 0; i < count; i++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const bucket = buckets.get(cellKey(cellX[i] + dx, cellY[i] + dy));
+        if (!bucket) continue;
+        for (const j of bucket) {
+          if (j <= i) continue;
+          const offsetX = centerX[j] - centerX[i];
+          const offsetY = centerY[j] - centerY[i];
+          const alongLong = Math.abs(offsetX * longAxisX[i] + offsetY * longAxisY[i]);
+          const alongShort = Math.abs(-offsetX * longAxisY[i] + offsetY * longAxisX[i]);
+          const beside =
+            alongLong < 0.3 * longSide[i] && alongShort > 0.5 * shortSide[i] && alongShort < shortSide[i] + gapM;
+          const endToEnd =
+            alongShort < 0.3 * shortSide[i] && alongLong > 0.5 * longSide[i] && alongLong < longSide[i] + gapM;
+          if (beside || endToEnd) visit(i, j);
+        }
+      }
+    }
+  }
+};
+
 /** Rows and orientation of every table, collected per configuration. */
 const readShapes = (modules: ModuleGeometry, tables: Map<number, number[]>) => {
   const { centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
@@ -793,22 +881,159 @@ export interface BarcodePointOptions {
 }
 
 /**
- * Barcode label position of every panel as lon,lat pairs (NaN if unknown),
- * indexed like the panels.
+ * Barcode positions of every panel: BARCODE_POINT_SLOTS lon,lat pairs per
+ * panel (NaN where a slot is unused), indexed like the panels. Normally only
+ * the first slot is used; 4 Corner Mode fills the corners it keeps.
+ * Read it through forEachBarcodePoint.
  *
  * Each row of every table is walked along the chosen course. The first module
  * keeps the chosen spot; with upside-down installation every next module is
  * turned 180°, and with reset on gap a break wider than BARCODE_GAP_RESET_M
  * starts the pattern again. Tables always start fresh.
  */
+/**
+ * 4 Corner Mode: a point at each of a module's four corners, with the corners
+ * of touching modules merged into one point on their shared border.
+ *
+ * Two modules side by side already carry their labels on the same joint, so a
+ * point per module there would sit centimetres from its twin. A corner only
+ * stays on its own where the module has no neighbour — the end of a string,
+ * or a module standing alone.
+ */
+const writeCornerPoints = (
+  modules: ModuleGeometry,
+  points: Float64Array,
+  settings: BarcodeLabelSettings
+): void => {
+  const { count, centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
+  const insets = labelInsets(settings);
+  const gapM = Math.min(MAX_NEXT_PANEL_GAP_M, Math.max(0, settings.nextPanelGapM ?? DEFAULT_NEXT_PANEL_GAP_M));
+  const cornerInsetM = Math.max(0, settings.cornerInsetM ?? DEFAULT_CORNER_INSET_M);
+
+  /**
+   * Which of a module's four sides have a neighbour: top and bottom are the
+   * ends of its long axis, left and right the ends of its short axis. A side
+   * without one is an outer edge of the array, where the point is pulled in
+   * by the corner inset.
+   */
+  const occupied = new Uint8Array(count * 4); // 0 top, 1 bottom, 2 left, 3 right
+  const markSide = (panel: number, offsetX: number, offsetY: number) => {
+    const towardsTop = offsetX * longAxisX[panel] + offsetY * longAxisY[panel];
+    const towardsLeft = -offsetX * longAxisY[panel] + offsetY * longAxisX[panel];
+    if (Math.abs(towardsTop) >= Math.abs(towardsLeft)) occupied[panel * 4 + (towardsTop > 0 ? 0 : 1)] = 1;
+    else occupied[panel * 4 + (towardsLeft > 0 ? 2 : 3)] = 1;
+  };
+  forEachAdjacentPair(modules, gapM, (a, b) => {
+    markSide(a, centerX[b] - centerX[a], centerY[b] - centerY[a]);
+    markSide(b, centerX[a] - centerX[b], centerY[a] - centerY[b]);
+  });
+
+  // The four corner points of every module, in the local metric frame.
+  const cornerX = new Float64Array(count * BARCODE_POINT_SLOTS);
+  const cornerY = new Float64Array(count * BARCODE_POINT_SLOTS);
+  for (let panel = 0; panel < count; panel++) {
+    const topX = longAxisX[panel];
+    const topY = longAxisY[panel];
+    const leftX = -topY;
+    const leftY = topX;
+    const alongTop = Math.max(0, longSide[panel] / 2 - insets.fromEndM - BARCODE_LABEL_DEPTH_M / 2);
+    const alongLeft = Math.max(0, shortSide[panel] / 2 - insets.fromSideM - BARCODE_LABEL_WIDTH_M / 2);
+    const signs: [number, number][] = [
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1],
+    ];
+    signs.forEach(([top, left], slot) => {
+      // A free side pulls its points further in; a shared one keeps the joint.
+      const freeTop = occupied[panel * 4 + (top > 0 ? 0 : 1)] === 0;
+      const freeLeft = occupied[panel * 4 + (left > 0 ? 2 : 3)] === 0;
+      const reachTop = Math.max(0, alongTop - (freeTop ? cornerInsetM : 0));
+      const reachLeft = Math.max(0, alongLeft - (freeLeft ? cornerInsetM : 0));
+      const index = panel * BARCODE_POINT_SLOTS + slot;
+      cornerX[index] = centerX[panel] + topX * reachTop * top + leftX * reachLeft * left;
+      cornerY[index] = centerY[panel] + topY * reachTop * top + leftY * reachLeft * left;
+    });
+  }
+
+  // Corners of touching modules that face each other become one point.
+  const parent = new Int32Array(count * BARCODE_POINT_SLOTS);
+  for (let index = 0; index < parent.length; index++) parent[index] = index;
+  const find = (index: number) => {
+    let root = index;
+    while (parent[root] !== root) {
+      parent[root] = parent[parent[root]];
+      root = parent[root];
+    }
+    return root;
+  };
+
+  const distanceSquared = (a: number, b: number) =>
+    (cornerX[a] - cornerX[b]) ** 2 + (cornerY[a] - cornerY[b]) ** 2;
+  const nearestCorner = (from: number, panel: number) => {
+    let best = panel * BARCODE_POINT_SLOTS;
+    let bestDistance = Infinity;
+    for (let slot = 0; slot < BARCODE_POINT_SLOTS; slot++) {
+      const candidate = panel * BARCODE_POINT_SLOTS + slot;
+      const distance = distanceSquared(from, candidate);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+    return { index: best, distance: bestDistance };
+  };
+
+  forEachAdjacentPair(modules, gapM, (a, b) => {
+    // Far enough for a facing pair across a joint, short of the distance
+    // between two corners of the same module.
+    const limit = (0.5 * (longSide[a] + shortSide[a])) ** 2;
+    for (let slot = 0; slot < BARCODE_POINT_SLOTS; slot++) {
+      const corner = a * BARCODE_POINT_SLOTS + slot;
+      const towards = nearestCorner(corner, b);
+      if (towards.distance > limit) continue;
+      // Only a mutually nearest pair faces across the joint.
+      if (nearestCorner(towards.index, a).index !== corner) continue;
+      const rootA = find(corner);
+      const rootB = find(towards.index);
+      if (rootA !== rootB) parent[rootA] = rootB;
+    }
+  });
+
+  // One point per group, at the middle of the corners it stands for.
+  const sumX = new Float64Array(parent.length);
+  const sumY = new Float64Array(parent.length);
+  const members = new Int32Array(parent.length);
+  for (let index = 0; index < parent.length; index++) {
+    const root = find(index);
+    sumX[root] += cornerX[index];
+    sumY[root] += cornerY[index];
+    members[root]++;
+  }
+
+  for (let root = 0; root < parent.length; root++) {
+    if (members[root] === 0) continue;
+    const panel = Math.floor(root / BARCODE_POINT_SLOTS);
+    const slot = root % BARCODE_POINT_SLOTS;
+    const offset = panel * BARCODE_POINT_STRIDE + slot * 2;
+    points[offset] = modules.lon0 + sumX[root] / members[root] / modules.kx;
+    points[offset + 1] = modules.lat0 + sumY[root] / members[root] / modules.ky;
+  }
+};
+
 export const computeBarcodePoints = (
   corners: ArrayLike<number>,
   { tableGapM, installationBearing, settings }: BarcodePointOptions
 ): Float64Array => {
   const count = Math.floor(corners.length / 8);
-  const points = new Float64Array(count * 2).fill(Number.NaN);
+  const points = new Float64Array(count * BARCODE_POINT_STRIDE).fill(Number.NaN);
   const modules = prepareModules(corners);
   if (!modules) return points;
+
+  if (settings.fourCorners) {
+    writeCornerPoints(modules, points, settings);
+    return points;
+  }
 
   const { centerX, centerY, longAxisX, longAxisY, longSide, shortSide } = modules;
   const { tables } = detectTables(modules, resolveTableGap(modules, tableGapM));
@@ -874,8 +1099,8 @@ export const computeBarcodePoints = (
 
         const x = centerX[panel] + topX * offset.alongTopM + leftX * offset.alongLeftM;
         const y = centerY[panel] + topY * offset.alongTopM + leftY * offset.alongLeftM;
-        points[panel * 2] = modules.lon0 + x / modules.kx;
-        points[panel * 2 + 1] = modules.lat0 + y / modules.ky;
+        points[panel * BARCODE_POINT_STRIDE] = modules.lon0 + x / modules.kx;
+        points[panel * BARCODE_POINT_STRIDE + 1] = modules.lat0 + y / modules.ky;
       });
     }
   }
@@ -1094,6 +1319,12 @@ export interface ScanPathOptions {
 
 export interface ScanTablePath {
   number: number;
+  /**
+   * The table starts straight ahead of where the previous one ended, in the
+   * same barcode line: the aircraft can fly on at scan altitude instead of
+   * climbing over the panels. False for the first table.
+   */
+  continuesAhead: boolean;
   /** Straight barcode lines flown along the table */
   lines: number;
   /** Barcodes on the table; close pairs share one scan point, so `points` can be fewer. */
@@ -1144,11 +1375,15 @@ const mergeClosePairs = (line: ScanItem[], distanceM: number): ScanItem[] => {
  * only centimetres apart share one line. On such a line two barcodes closer
  * than half a module are scanned from one point halfway between them.
  *
- * The first table starts at the chosen corner of a north-up map. Lines are
- * flown back and forth: after a line the aircraft moves to the nearest next
- * line and flies it the other way, so there are no empty return legs. Every
- * next table starts on its line and at its end nearest to where the previous
- * table ended. Tables keep the given order; numbers that no longer exist are
+ * A table that begins straight ahead of the previous one, in the same line,
+ * is marked `continuesAhead` so the route can keep the scan altitude there.
+ *
+ * Every table starts at the chosen corner of a north-up map, with one
+ * exception: a table lying on the line the aircraft is already on — in front
+ * of it or behind it — is entered at its nearer end, so no stretch is flown
+ * twice. Lines are flown back and forth: after a line the aircraft moves to
+ * the nearest next line and flies it the other way, so there are no empty
+ * return legs. Tables keep the given order; numbers that no longer exist are
  * left out.
  */
 export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOptions): ScanTablePath[] => {
@@ -1197,22 +1432,32 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
 
     const items: ScanItem[] = [];
     for (const panel of members) {
-      const lon = points[panel * 2];
-      const lat = points[panel * 2 + 1];
-      if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-      const x = (lon - lon0) * kx;
-      const y = (lat - lat0) * ky;
-      items.push({ lon, lat, along: x * alongX + y * alongY, across: x * acrossX + y * acrossY });
+      forEachBarcodePoint(points, panel, (lon, lat) => {
+        const x = (lon - lon0) * kx;
+        const y = (lat - lat0) * ky;
+        items.push({ lon, lat, along: x * alongX + y * alongY, across: x * acrossX + y * acrossY });
+      });
     }
     if (items.length === 0) continue;
 
     const nearerSign = (value: number, min: number, max: number) =>
       Math.abs(value - max) <= Math.abs(value - min) ? 1 : -1;
 
+    // In front means the table lies on the line the aircraft is already on,
+    // ahead of it or behind it. Then the nearer end is taken, so no distance
+    // is flown twice. A table to the left or right is started at the chosen
+    // corner instead, so every string is scanned the same way round.
+    const acrossValues = items.map((item) => item.across);
+    const minAcross = Math.min(...acrossValues);
+    const maxAcross = Math.max(...acrossValues);
+    const inFront =
+      previousEnd !== null &&
+      previousEnd[1] >= minAcross - 0.5 * moduleAcross &&
+      previousEnd[1] <= maxAcross + 0.5 * moduleAcross;
+
     let lineSign = acrossSign;
-    if (previousEnd) {
-      const acrossValues = items.map((item) => item.across);
-      lineSign = nearerSign(previousEnd[1], Math.min(...acrossValues), Math.max(...acrossValues));
+    if (previousEnd && inFront) {
+      lineSign = nearerSign(previousEnd[1], minAcross, maxAcross);
     }
     // First line: the one furthest towards lineSign.
     items.sort((a, b) => (b.across - a.across) * lineSign);
@@ -1223,23 +1468,29 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
     });
 
     let endSign = alongSign;
-    if (previousEnd) {
+    if (previousEnd && inFront) {
       const alongValues = lines[0].map((item) => item.along);
       endSign = nearerSign(previousEnd[0], Math.min(...alongValues), Math.max(...alongValues));
     }
 
     const tablePoints: [number, number][] = [];
+    let entryStop = items[0];
     let lastStop = items[0];
     lines.forEach((line, lineIndex) => {
       line.sort((a, b) => (b.along - a.along) * endSign);
       const stops = mergeClosePairs(line, pairDistanceM);
       if (lineIndex % 2 === 1) stops.reverse();
+      if (lineIndex === 0) entryStop = stops[0];
       for (const stop of stops) tablePoints.push([stop.lon, stop.lat]);
       lastStop = stops[stops.length - 1];
     });
 
+    // Ahead in the same line: the aircraft would only move along the line, so
+    // it stays between the strings instead of crossing over the panels.
+    const continuesAhead = previousEnd !== null && Math.abs(entryStop.across - previousEnd[1]) <= 0.5 * moduleAcross;
+
     previousEnd = [lastStop.along, lastStop.across];
-    paths.push({ number, lines: lines.length, barcodes: items.length, points: tablePoints });
+    paths.push({ number, continuesAhead, lines: lines.length, barcodes: items.length, points: tablePoints });
   }
 
   return paths;

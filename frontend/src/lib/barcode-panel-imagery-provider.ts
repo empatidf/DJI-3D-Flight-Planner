@@ -11,6 +11,7 @@
  */
 
 import { Credit, Event as CesiumEvent, GeographicTilingScheme, Math as CesiumMath, Rectangle } from 'cesium';
+import { forEachBarcodePoint } from './barcode-panels';
 import type { BarcodeSymbol, PanelBounds, PanelSize, PanelStyle } from './barcode-panels';
 
 const TILE_SIZE = 256;
@@ -347,13 +348,13 @@ export class BarcodePanelImageryProvider {
       // Same single-path approach: one fill and one thin dark rim for every symbol in the tile.
       ctx.beginPath();
       index.forEachNear(west - marginLon, south - marginLat, east + marginLon, north + marginLat, (panel) => {
-        const lon = points[panel * 2];
-        const lat = points[panel * 2 + 1];
-        if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
-        const px = (lon - west) * scaleX;
-        const py = (north - lat) * scaleY;
-        const direction = symbol === 'label' ? shortSideDirection(corners, panel * 8, cosLat) : upright;
-        traceBarcodeSymbol(ctx, symbol, px, py, size, stretchX, direction);
+        // A panel carries one label point, or the corners 4 Corner Mode kept.
+        forEachBarcodePoint(points, panel, (lon, lat) => {
+          const px = (lon - west) * scaleX;
+          const py = (north - lat) * scaleY;
+          const direction = symbol === 'label' ? shortSideDirection(corners, panel * 8, cosLat) : upright;
+          traceBarcodeSymbol(ctx, symbol, px, py, size, stretchX, direction);
+        });
       });
       ctx.globalAlpha = 1;
       ctx.fillStyle = style.barcodeColor;
