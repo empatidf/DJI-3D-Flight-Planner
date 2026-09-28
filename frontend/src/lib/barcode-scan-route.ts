@@ -8,7 +8,7 @@
  * altitude is what they are measured from when exported.
  */
 
-import { useMissionStore, type Mission, type WaypointKind } from '../stores/mission-store';
+import { useMissionStore, type FlightLine, type Mission, type WaypointKind } from '../stores/mission-store';
 import {
   DEFAULT_SAFE_JUMP_M,
   DEFAULT_SCAN_ALTITUDE_M,
@@ -129,6 +129,60 @@ export const summarizeBarcodeRoute = (coordinates: number[][], takeoffGroundM: n
 const findMission = (missionId: string) => useMissionStore.getState().missions.find((item) => item.id === missionId);
 
 /**
+ * Start the route again at one of its waypoints, for a scan that was cut
+ * short: everything before it goes, and the aircraft takes off, climbs to the
+ * safe takeoff height over both the takeoff point and the new first barcode,
+ * crosses and drops onto it — the same opening as a fresh route.
+ *
+ * Returns the flight line as it was, so the crop can be taken back.
+ */
+export const cropBarcodeRoute = (missionId: string, pointIndex: number): FlightLine => {
+  const mission = findMission(missionId);
+  const route = mission ? getBarcodeRoute(mission) : null;
+  if (!mission || !route) throw new Error('This mission has no scan route.');
+  if (pointIndex <= 0 || pointIndex >= route.coordinates.length) {
+    throw new Error('Pick a waypoint after the start of the route.');
+  }
+  if (!mission.takeoffPoint) throw new Error('Set the takeoff point first.');
+
+  const settings = barcodeRouteSettings(mission);
+  const kinds = route.pointKinds ?? [];
+  const kept = route.coordinates.slice(pointIndex);
+  const keptKinds = kinds.slice(pointIndex);
+  const first = kept[0];
+
+  // Ground under the new first waypoint: a barcode is flown at scan altitude
+  // over it, anything else is already a height to stay above.
+  const firstGround = keptKinds[0] === 'barcode' ? first[2] - settings.scanAltitudeM : first[2];
+  const [takeoffLon, takeoffLat, takeoffGround] = mission.takeoffPoint;
+  const level = Math.round((Math.max(takeoffGround, firstGround) + settings.safeTakeoffM) * 100) / 100;
+
+  const coordinates = [[takeoffLon, takeoffLat, level], [first[0], first[1], level], ...kept];
+  const pointKinds: WaypointKind[] = ['transit', 'transit', ...keptKinds];
+  // Two waypoints replace everything that was dropped, so the links move with them.
+  const linkLegs = (route.linkLegs ?? [])
+    .filter((leg) => leg >= pointIndex)
+    .map((leg) => leg - pointIndex + 2);
+
+  useMissionStore.getState().updateMission(missionId, {
+    flightLines: mission.flightLines.map((line) =>
+      line.id === BARCODE_ROUTE_LINE_ID ? { ...line, coordinates, pointKinds, linkLegs } : line
+    ),
+  });
+
+  return route;
+};
+
+/** Put a cropped route back the way it was. */
+export const restoreBarcodeRoute = (missionId: string, line: FlightLine): void => {
+  const mission = findMission(missionId);
+  if (!mission) return;
+  useMissionStore.getState().updateMission(missionId, {
+    flightLines: mission.flightLines.map((item) => (item.id === line.id ? line : item)),
+  });
+};
+
+/**
  * Build the scan route and store it as the mission's flight line.
  *
  * 1. Takeoff: climb to the safe takeoff height over the takeoff point and over
@@ -175,16 +229,25 @@ export const generateBarcodeScanRoute = async (missionId: string): Promise<strin
   // to 0 — is flown to directly, at the scan altitude of its first barcode.
   const flyOn = (path: (typeof paths)[number]) => path.continuesAhead || settings.safeJumpM <= 0;
 
-  // The height of a barcode is read in the middle of its module half, not at
-  // the barcode itself: a barcode sits centimetres from the edge, where a
-  // surface model easily reads the ground between the rows, and a tilted
-  // module is lower at its bottom edge than at its top. The waypoint keeps
-  // the barcode's own position.
+  // A barcode's height is read a little way onto its panel, not at the
+  // barcode: it sits centimetres from the edge, where a surface model easily
+  // reads the ground between the rows, and a tilted module is lower at its
+  // bottom edge than at its top. A point shared by two panels is read on both
+  // and keeps the higher roof. The waypoint itself stays on the barcode.
   const scanPoints = paths.flatMap((path) => path.points.map(([lon, lat]) => [lon, lat, 0]));
-  const centers = paths.flatMap((path) => path.heightRefs.map(([lon, lat]) => [lon, lat, 0]));
-  const probed = await sampleTerrainForWaypoints(viewer, centers, settings.scanAltitudeM);
+  const refsPerPoint = paths.flatMap((path) => path.heightRefs);
+  const probes = refsPerPoint.flatMap((refs) => refs.map(([lon, lat]) => [lon, lat, 0]));
+  const probed = await sampleTerrainForWaypoints(viewer, probes, settings.scanAltitudeM);
 
-  const sampled = scanPoints.map(([lon, lat], index) => [lon, lat, probed[index][2]]);
+  let probeIndex = 0;
+  const sampled = scanPoints.map(([lon, lat], index) => {
+    let highest = -Infinity;
+    for (let read = 0; read < refsPerPoint[index].length; read++) {
+      highest = Math.max(highest, probed[probeIndex][2]);
+      probeIndex++;
+    }
+    return [lon, lat, Number.isFinite(highest) ? highest : settings.scanAltitudeM];
+  });
 
   // Whatever is still a spike is smoothed along its own run.
   let spikesFixed = 0;

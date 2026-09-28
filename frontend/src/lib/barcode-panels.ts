@@ -1359,8 +1359,8 @@ export interface ScanTablePath {
   barcodes: number;
   /** [lon, lat] scan points in scan order */
   points: [number, number][];
-  /** [lon, lat] the height of each scan point is read at: the middle of its module half. */
-  heightRefs: [number, number][];
+  /** Per scan point, the one or two places its height may be read at. */
+  heightRefs: [number, number][][];
 }
 
 /** A barcode or scan point in the table's frame, metres along and across the table line. */
@@ -1370,14 +1370,19 @@ interface ScanItem {
   along: number;
   across: number;
   /**
-   * [lon, lat] the height of this point is taken from: the middle of the half
-   * of the module the point sits in, along the module's long axis. A barcode
-   * sits centimetres from the edge, where a surface model easily reads the
-   * ground between the rows, and a tilted module is a good half metre lower
-   * at its bottom edge than at its top — so neither the barcode itself nor
-   * the middle of the whole module is the right place to read.
+   * [lon, lat] places the height of this point may be read at: the point
+   * moved onto the panel, a quarter of a module in and a quarter to each
+   * side.
+   *
+   * A barcode sits centimetres from the edge, where a surface model easily
+   * reads the ground between the rows, and a tilted module is a good half
+   * metre lower at its bottom edge than at its top — so the height cannot be
+   * read at the barcode, nor at the middle of the whole module. Moving only
+   * sideways keeps the reference at the point's own place along the string,
+   * which is what keeps a line of waypoints smooth. A point shared by two
+   * panels keeps one reference per panel, and the higher one wins.
    */
-  heightRef: [number, number];
+  heightRefs: [number, number][];
 }
 
 /**
@@ -1396,10 +1401,8 @@ const mergeClosePairs = (line: ScanItem[], distanceM: number): ScanItem[] => {
         lat: (item.lat + next.lat) / 2,
         along: (item.along + next.along) / 2,
         across: (item.across + next.across) / 2,
-        heightRef: [
-          (item.heightRef[0] + next.heightRef[0]) / 2,
-          (item.heightRef[1] + next.heightRef[1]) / 2,
-        ],
+        // Both panels keep a say in the height; the higher roof wins later.
+        heightRefs: [...item.heightRefs, ...next.heightRefs].slice(0, 4),
       });
       i++;
     } else {
@@ -1476,22 +1479,32 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
     const longAlong = Math.abs(longAxisX[first] * alongX + longAxisY[first] * alongY);
     const items: ScanItem[] = [];
     for (const panel of members) {
-      // Half way up (or down) the module, on the side the point sits on.
-      const quarter = longSide[panel] / 4;
+      // Two places to read the height, a quarter of a module to each side of
+      // the point and a quarter towards the module's middle. A point on the
+      // joint between two modules then has one reading well inside each of
+      // them, and the end of a string has one inside its last module.
+      const quarterLong = longSide[panel] / 4;
+      const quarterShort = shortSide[panel] / 4;
+      const sideX = -longAxisY[panel];
+      const sideY = longAxisX[panel];
       forEachBarcodePoint(points, panel, (lon, lat) => {
         const x = (lon - lon0) * kx;
         const y = (lat - lat0) * ky;
         const offsetX = x - modules.centerX[panel];
         const offsetY = y - modules.centerY[panel];
         const towardsTop = offsetX * longAxisX[panel] + offsetY * longAxisY[panel] >= 0 ? 1 : -1;
-        const refX = modules.centerX[panel] + longAxisX[panel] * quarter * towardsTop;
-        const refY = modules.centerY[panel] + longAxisY[panel] * quarter * towardsTop;
+        const inwardX = x - longAxisX[panel] * quarterLong * towardsTop;
+        const inwardY = y - longAxisY[panel] * quarterLong * towardsTop;
+        const heightRefs: [number, number][] = [1, -1].map((side) => [
+          lon0 + (inwardX + sideX * quarterShort * side) / kx,
+          lat0 + (inwardY + sideY * quarterShort * side) / ky,
+        ]);
         items.push({
           lon,
           lat,
           along: x * alongX + y * alongY,
           across: x * acrossX + y * acrossY,
-          heightRef: [lon0 + refX / kx, lat0 + refY / ky],
+          heightRefs,
         });
       });
     }
@@ -1571,7 +1584,7 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
     }
 
     const chainPoints: [number, number][] = [];
-    const chainRefs: [number, number][] = [];
+    const chainRefs: [number, number][][] = [];
     let entryStop = items[0];
     let lastStop = items[0];
     lines.forEach((line, lineIndex) => {
@@ -1581,7 +1594,7 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
       if (lineIndex === 0) entryStop = stops[0];
       for (const stop of stops) {
         chainPoints.push([stop.lon, stop.lat]);
-        chainRefs.push(stop.heightRef);
+        chainRefs.push(stop.heightRefs);
       }
       lastStop = stops[stops.length - 1];
     });

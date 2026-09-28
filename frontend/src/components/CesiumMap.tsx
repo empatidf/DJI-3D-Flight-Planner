@@ -40,7 +40,7 @@ import {
   NearFarScalar,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { useMissionStore, waypointKey } from '../stores/mission-store';
+import { useMissionStore, waypointKey, type FlightLine } from '../stores/mission-store';
 import { sampleTerrainForWaypoints, sampleTerrainWithSubPoints, analyzeCollisionRisk } from '../lib/terrain-sampler';
 import {
   disposeLocalLayer,
@@ -60,6 +60,7 @@ import {
   type BarcodeScanData,
   type PanelStyle,
 } from '../lib/barcode-panels';
+import { cropBarcodeRoute, restoreBarcodeRoute } from '../lib/barcode-scan-route';
 import {
   BarcodePanelImageryProvider,
   PanelTileIndex,
@@ -153,6 +154,8 @@ export const CesiumMap = () => {
     table: number | null;
     tableFlipped: boolean;
     tableMarked: boolean;
+    /** Barcode missions: the scan route waypoint under the cursor, if any. */
+    routePoint: number | null;
   }>({
     visible: false,
     x: 0,
@@ -162,9 +165,12 @@ export const CesiumMap = () => {
     table: null,
     tableFlipped: false,
     tableMarked: false,
+    routePoint: null,
   });
   const [cropMenuState, setCropMenuState] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [cropUndoData, setCropUndoData] = useState<number[][] | null>(null);
+  /** The scan route as it was before the last crop, for taking it back. */
+  const [barcodeCropUndo, setBarcodeCropUndo] = useState<{ missionId: string; line: FlightLine } | null>(null);
   const [pointInfoState, setPointInfoState] = useState<{
     x: number; y: number;
     index: number; lon: number; lat: number;
@@ -577,6 +583,15 @@ export const CesiumMap = () => {
       table = findTableAt(tables, lonLat.lon, lonLat.lat);
     }
 
+    // A waypoint of this mission's scan route, so it can be cropped from there.
+    let routePoint: number | null = null;
+    if (mission?.missionType === 'barcode') {
+      const picked = viewer.scene.pick(position) as { id?: Entity } | undefined;
+      const pickedId = typeof picked?.id?.id === 'string' ? picked.id.id : '';
+      const match = pickedId.match(new RegExp(`^waypoint-${mission.id}-\\d+-(\\d+)$`));
+      if (match) routePoint = Number(match[1]);
+    }
+
     setContextMenuState({
       visible: true,
       x: event.clientX,
@@ -584,6 +599,7 @@ export const CesiumMap = () => {
       lon: lonLat.lon,
       lat: lonLat.lat,
       table,
+      routePoint,
       tableFlipped: table !== null && (data?.scan?.flippedTables ?? []).includes(table),
       tableMarked: table !== null && (data?.scan?.markedTables ?? []).includes(table),
     });
@@ -604,6 +620,25 @@ export const CesiumMap = () => {
       ? [...new Set([...current, table])].sort((a, b) => a - b)
       : current.filter((item) => item !== table);
     store.updateMission(mission.id, { barcode: { ...data, scan: { ...data.scan, [key]: next } } });
+    setContextMenuState((prev) => ({ ...prev, visible: false }));
+  };
+
+  /** Start the scan route again at this waypoint; the flight before it is done. */
+  const cropScanRouteHere = (pointIndex: number) => {
+    if (!activeMissionId) return;
+    try {
+      const previous = cropBarcodeRoute(activeMissionId, pointIndex);
+      setBarcodeCropUndo({ missionId: activeMissionId, line: previous });
+    } catch (error) {
+      console.warn('[BarcodeCrop]', error);
+      window.alert((error as Error)?.message ?? 'The route could not be cropped.');
+    }
+    setContextMenuState((prev) => ({ ...prev, visible: false }));
+  };
+
+  const undoScanRouteCrop = () => {
+    if (barcodeCropUndo) restoreBarcodeRoute(barcodeCropUndo.missionId, barcodeCropUndo.line);
+    setBarcodeCropUndo(null);
     setContextMenuState((prev) => ({ ...prev, visible: false }));
   };
 
@@ -3525,6 +3560,28 @@ export const CesiumMap = () => {
           }}
           onClick={(event) => event.stopPropagation()}
         >
+          {contextMenuState.routePoint !== null && contextMenuState.routePoint > 0 && (
+            <>
+              <div className="map-context-menu-head">Waypoint #{contextMenuState.routePoint + 1}</div>
+              <button
+                type="button"
+                className="map-context-menu-item"
+                onClick={() => cropScanRouteHere(contextMenuState.routePoint!)}
+                title="Drop everything before this waypoint and take off straight to it, at the safe takeoff height."
+              >
+                ✂ Crop from here
+              </button>
+              <div className="map-context-menu-sep" />
+            </>
+          )}
+          {barcodeCropUndo && barcodeCropUndo.missionId === activeMissionId && (
+            <>
+              <button type="button" className="map-context-menu-item" onClick={undoScanRouteCrop}>
+                ↩ Undo crop
+              </button>
+              <div className="map-context-menu-sep" />
+            </>
+          )}
           {contextMenuState.table !== null && (
             <>
               <div className="map-context-menu-head">Table {contextMenuState.table}</div>
