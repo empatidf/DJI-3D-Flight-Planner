@@ -189,6 +189,17 @@ export interface BarcodeLabelSettings {
    * string and the outer sides — so they do not sit on the very rim, meters.
    */
   cornerInsetM?: number;
+  /**
+   * Manual position, a setting of 4 Corner Mode: fly only every so many of the
+   * scan points of a line, for remote controllers that cannot hold a route
+   * with thousands of waypoints. The route is planned exactly as it otherwise
+   * would be, heights and all, and points are left out of it afterwards. The
+   * first and the last point of every line stay, and every line gains a
+   * lead-in and a lead-out point one module beyond its ends.
+   */
+  manualPosition?: boolean;
+  /** Scan points passed over between two flown ones, in Manual position. */
+  skipPanels?: number;
 }
 
 /** Points one panel can carry: one label spot, or its four corners. */
@@ -199,6 +210,21 @@ const BARCODE_POINT_STRIDE = BARCODE_POINT_SLOTS * 2;
 export const DEFAULT_NEXT_PANEL_GAP_M = 0.15;
 /** Default extra inset of the points on a free module edge (4 Corner Mode). */
 export const DEFAULT_CORNER_INSET_M = 0.2;
+/** Default number of scan points passed over between two flown ones. */
+export const DEFAULT_SKIP_PANELS = 1;
+export const MAX_SKIP_PANELS = 99;
+
+/** Scan points passed over between two flown ones, as a whole number in range. */
+export const skipPanelsOf = (settings: Pick<BarcodeLabelSettings, 'skipPanels'>): number =>
+  Math.min(MAX_SKIP_PANELS, Math.max(0, Math.round(settings.skipPanels ?? DEFAULT_SKIP_PANELS)));
+
+/**
+ * Whether the point at this place in a barcode line is flown. The first and
+ * the last one always are: they are the ends of the line, however the count
+ * comes out.
+ */
+export const isFlownInLine = (index: number, lineLength: number, skip: number): boolean =>
+  index === 0 || index === lineLength - 1 || index % (skip + 1) === 0;
 export const MAX_NEXT_PANEL_GAP_M = 5;
 
 /** Every point of one panel: up to BARCODE_POINT_SLOTS, unused slots are NaN. */
@@ -268,7 +294,13 @@ export const describeBarcodeLabel = (settings: BarcodeLabelSettings): string =>
   settings.fourCorners
     ? `4 corner mode, shared borders merged up to ${Math.round(
         (settings.nextPanelGapM ?? DEFAULT_NEXT_PANEL_GAP_M) * 100
-      )} cm, outer points ${Math.round((settings.cornerInsetM ?? DEFAULT_CORNER_INSET_M) * 100)} cm further in`
+      )} cm, outer points ${Math.round((settings.cornerInsetM ?? DEFAULT_CORNER_INSET_M) * 100)} cm further in${
+        settings.manualPosition
+          ? `, manual position, ${
+              skipPanelsOf(settings) === 0 ? 'every point flown' : `1 of every ${skipPanelsOf(settings) + 1} points flown`
+            }`
+          : ''
+      }`
     : [
     BARCODE_SLOTS.find((option) => option.id === settings.slot)?.label.toLowerCase() ?? settings.slot,
     `top edge faces ${COMPASS_SIDE_LABELS[settings.topEdge].toLowerCase()}`,
@@ -298,6 +330,8 @@ export const DEFAULT_SAFE_JUMP_M = 2;
 export const DEFAULT_SCAN_ALTITUDE_M = 0.8;
 /** Default flight speed for barcode scan flights, m/s (a decimal value). */
 export const DEFAULT_SCAN_SPEED_MPS = 1;
+/** Default speed away from the panels: to the first barcode, and between runs. */
+export const DEFAULT_SCAN_TRANSIT_SPEED_MPS = 5;
 /** Default hover time at a barcode point, seconds (a decimal value). */
 export const DEFAULT_SCAN_HOVER_SECONDS = 1;
 
@@ -312,14 +346,28 @@ export interface BarcodeScanSettings {
   scanAltitudeM?: number;
   /** Flight speed, m/s. */
   flightSpeedMps?: number;
-  /** Aircraft heading during the scan, degrees clockwise from north; defaults to the installation direction. */
+  /**
+   * Which heading the aircraft holds: along the panel rows in the installation
+   * direction, the opposite course, or the angle typed in `droneYawDeg`.
+   */
+  droneYawMode?: DroneYawMode;
+  /** Aircraft heading when the mode is `manual`, degrees clockwise from north. */
   droneYawDeg?: number;
+  /** Speed of the legs that are not scanning, m/s. */
+  transitSpeedMps?: number;
   /** Take a photo with the wide camera at every barcode point. */
   takePhotoEnabled?: boolean;
   /** Hover at every barcode point before the photo. */
   hoverEnabled?: boolean;
   /** Hover time at a barcode point, seconds. */
   hoverSeconds?: number;
+  /**
+   * Leave the takeoff point out of the route, so the first waypoint is the
+   * first barcode. The takeoff point is still needed — every height is
+   * measured from its ground — it is simply not flown to. The aircraft climbs
+   * to the safe takeoff height and heads for the first barcode from there.
+   */
+  excludeTakeoffPoint?: boolean;
   /** Table numbers to scan, in flight order (the order they were picked). */
   tables?: number[];
   /**
@@ -335,6 +383,11 @@ export interface BarcodeScanSettings {
   /** Inputs the stored route was generated from, to tell when it is out of date. */
   routeKey?: string;
 }
+
+/** `forward` = the installation direction, `reverse` = the opposite course. */
+export type DroneYawMode = 'forward' | 'reverse' | 'manual';
+
+export const DEFAULT_DRONE_YAW_MODE: DroneYawMode = 'forward';
 
 export type ScanStartCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
@@ -1357,6 +1410,21 @@ export interface ScanTablePath {
   lines: number;
   /** Barcodes on the table; close pairs share one scan point, so `points` can be fewer. */
   barcodes: number;
+  /** Points that read no barcode: the lead-in and lead-out of every line. */
+  leads: number;
+  /**
+   * Per scan point, the point whose height it has to take, or null for the
+   * usual case of a point that reads its own. A lead-in and a lead-out hold
+   * the height of the barcode beside them: nothing is measured where they sit,
+   * off the end of the table.
+   */
+  heightFrom: (number | null)[];
+  /**
+   * Per scan point, whether it is flown. Manual position leaves some out, and
+   * they stay in `points` so that heights are read and smoothed over the whole
+   * line, exactly as they are without it.
+   */
+  flown: boolean[];
   /** [lon, lat] scan points in scan order */
   points: [number, number][];
   /** Per scan point, the one or two places its height may be read at. */
@@ -1548,6 +1616,8 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
   const paths: ScanTablePath[] = [];
   // Where the previous run ended, as [along, across].
   let previousEnd: [number, number] | null = null;
+  const leadPoints = options.label.fourCorners === true && options.label.manualPosition === true;
+  const skip = skipPanelsOf(options.label);
 
   for (const chain of chains) {
     const items = chain.flatMap((table) => table.items);
@@ -1583,18 +1653,74 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
       endSign = nearerSign(previousEnd[0], Math.min(...alongValues), Math.max(...alongValues));
     }
 
+    /**
+     * A module further on: where the next module's point would be if the row
+     * carried on. It keeps the height of the point it is taken from, so the
+     * aircraft holds the scan height over it instead of following whatever the
+     * surface model reads off the end of the table.
+     */
+    const beyond = (from: ScanItem, towards: ScanItem | undefined, fallbackSign: number): ScanItem => {
+      let dx = alongX * fallbackSign;
+      let dy = alongY * fallbackSign;
+      if (towards) {
+        const ux = (from.lon - towards.lon) * kx;
+        const uy = (from.lat - towards.lat) * ky;
+        const length = Math.hypot(ux, uy);
+        if (length > 1e-6) {
+          dx = ux / length;
+          dy = uy / length;
+        }
+      }
+      const lon = from.lon + (dx * moduleAlong) / kx;
+      const lat = from.lat + (dy * moduleAlong) / ky;
+      const x = (lon - lon0) * kx;
+      const y = (lat - lat0) * ky;
+      return {
+        lon,
+        lat,
+        along: x * alongX + y * alongY,
+        across: x * acrossX + y * acrossY,
+        heightRefs: from.heightRefs,
+      };
+    };
+
     const chainPoints: [number, number][] = [];
     const chainRefs: [number, number][][] = [];
+    const chainHeightFrom: (number | null)[] = [];
+    const chainFlown: boolean[] = [];
     let entryStop = items[0];
     let lastStop = items[0];
     lines.forEach((line, lineIndex) => {
       line.sort((a, b) => (b.along - a.along) * endSign);
-      const stops = mergeClosePairs(line, pairDistanceM);
-      if (lineIndex % 2 === 1) stops.reverse();
+      const merged = mergeClosePairs(line, pairDistanceM);
+      if (lineIndex % 2 === 1) merged.reverse();
+      // Manual position: the aircraft is still gathering or shedding speed at
+      // the ends of a row, so the first and the last barcode are passed at a
+      // steady speed only if the row is entered and left one module further out.
+      const travelSign = (lineIndex % 2 === 1 ? 1 : -1) * endSign;
+      const stops = leadPoints
+        ? [
+            beyond(merged[0], merged[1], -travelSign),
+            ...merged,
+            beyond(merged[merged.length - 1], merged[merged.length - 2], travelSign),
+          ]
+        : merged;
       if (lineIndex === 0) entryStop = stops[0];
-      for (const stop of stops) {
+      const lineStart = chainPoints.length;
+      stops.forEach((stop, k) => {
         chainPoints.push([stop.lon, stop.lat]);
         chainRefs.push(stop.heightRefs);
+        chainHeightFrom.push(null);
+        // Manual position: one point of every so many along the line, the ends
+        // always. The lead-in and lead-out are the ends here, and the count
+        // runs over the barcodes between them.
+        chainFlown.push(!leadPoints || isFlownInLine(k - 1, merged.length, skip));
+      });
+      if (leadPoints) {
+        chainFlown[lineStart] = true;
+        chainFlown[chainPoints.length - 1] = true;
+        chainHeightFrom[lineStart] = lineStart + 1;
+        chainHeightFrom[chainPoints.length - 1] = chainPoints.length - 2;
       }
       lastStop = stops[stops.length - 1];
     });
@@ -1610,8 +1736,11 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
       continuesAhead,
       lines: lines.length,
       barcodes: items.length,
+      leads: leadPoints ? lines.length * 2 : 0,
       points: chainPoints,
       heightRefs: chainRefs,
+      heightFrom: chainHeightFrom,
+      flown: chainFlown,
     });
   }
 

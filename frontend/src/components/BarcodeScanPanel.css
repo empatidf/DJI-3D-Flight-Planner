@@ -1318,3 +1318,41 @@
   color: #d92d20;
   font-size: 10px;
 }
+
+/* Small choice control, e.g. the two courses of the drone yaw */
+.bs-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.bs-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--bs-muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bs-seg-btn:hover:not(.is-selected) {
+  background: #eef5ff;
+  color: var(--bs-accent);
+}
+
+.bs-seg-btn.is-selected {
+  background: var(--bs-accent);
+  color: #fff;
+}

@@ -16,8 +16,10 @@ import {
   DEFAULT_PANEL_STYLE,
   DEFAULT_SAFE_JUMP_M,
   DEFAULT_SCAN_ALTITUDE_M,
+  DEFAULT_DRONE_YAW_MODE,
   DEFAULT_SCAN_HOVER_SECONDS,
   DEFAULT_SCAN_SPEED_MPS,
+  DEFAULT_SCAN_TRANSIT_SPEED_MPS,
   DEFAULT_NEXT_PANEL_GAP_M,
   DEFAULT_SCAN_START_CORNER,
   MAX_NEXT_PANEL_GAP_M,
@@ -40,10 +42,12 @@ import {
   type PanelSize,
   type PanelStructure,
   type PanelStyle,
+  type DroneYawMode,
   type ScanStartCorner,
 } from '../lib/barcode-panels';
 import {
   BARCODE_ROUTE_LINE_ID,
+  barcodeDroneYaw,
   SAFE_TAKEOFF_DEFAULT_M,
   barcodeRouteKey,
   generateBarcodeScanRoute,
@@ -71,8 +75,12 @@ const SCAN_ALTITUDE_MIN_M = 0;
 const SCAN_ALTITUDE_MAX_M = 500;
 /** Scan altitude and flight speed are fine decimal values, so they step in tenths. */
 const SCAN_ALTITUDE_STEPS = [-1, -0.1, 0.1, 1];
-const SCAN_SPEED_MIN_MPS = 0.1;
+// DJI Pilot 2 will not fly a wayline below 1 m/s: its own speed field stops
+// there, and a slower waypoint speed is not honoured by the aircraft.
+const SCAN_SPEED_MIN_MPS = 1;
 const SCAN_SPEED_MAX_MPS = 5;
+/** DJI takes a route speed up to 15 m/s. */
+const TRANSIT_SPEED_MAX_MPS = 15;
 const DRONE_YAW_MIN_DEG = 0;
 const DRONE_YAW_MAX_DEG = 360;
 const HOVER_MIN_S = 0.1;
@@ -430,11 +438,15 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
   const safeJump = barcode?.scan?.safeJumpM ?? DEFAULT_SAFE_JUMP_M;
   const scanAltitude = barcode?.scan?.scanAltitudeM ?? DEFAULT_SCAN_ALTITUDE_M;
   const flightSpeed = barcode?.scan?.flightSpeedMps ?? DEFAULT_SCAN_SPEED_MPS;
-  const defaultDroneYaw = barcode?.structure?.installationBearing ?? 0;
-  const droneYaw = barcode?.scan?.droneYawDeg ?? defaultDroneYaw;
+  const forwardYaw = barcode?.structure?.installationBearing ?? 0;
+  const reverseYaw = (forwardYaw + 180) % 360;
+  const yawMode = barcode?.scan?.droneYawMode ?? DEFAULT_DRONE_YAW_MODE;
+  const droneYaw = barcodeDroneYaw(mission);
+  const transitSpeed = barcode?.scan?.transitSpeedMps ?? DEFAULT_SCAN_TRANSIT_SPEED_MPS;
   const flippedTables = barcode?.scan?.flippedTables ?? NO_TABLES;
   const markedTables = barcode?.scan?.markedTables ?? NO_TABLES;
   const takesPhoto = barcode?.scan?.takePhotoEnabled === true;
+  const excludesTakeoff = barcode?.scan?.excludeTakeoffPoint === true;
   const hovers = barcode?.scan?.hoverEnabled === true;
   const hoverSeconds = barcode?.scan?.hoverSeconds ?? DEFAULT_SCAN_HOVER_SECONDS;
   const [tableGapInput, setTableGapInput] = useState(() =>
@@ -625,7 +637,10 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
     });
   };
 
-  const saveScanSetting = (key: 'safeJumpM' | 'scanAltitudeM' | 'flightSpeedMps' | 'droneYawDeg', value: number) => {
+  const saveScanSetting = (
+    key: 'safeJumpM' | 'scanAltitudeM' | 'flightSpeedMps' | 'droneYawDeg' | 'transitSpeedMps',
+    value: number
+  ) => {
     if (barcode?.scan?.[key] !== value) updateScan({ [key]: value });
   };
 
@@ -1369,16 +1384,78 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
 
           {barcode && (
             <StepperRow
-              id={`${tableGapInputId}-yaw`}
-              label="Drone yaw"
-              title={`Aircraft heading during the whole scan, degrees clockwise from north (0–360). Default: the installation direction of the panels, ${defaultDroneYaw.toFixed(1)}°.`}
-              value={droneYaw}
-              min={DRONE_YAW_MIN_DEG}
-              max={DRONE_YAW_MAX_DEG}
-              fractionDigits={1}
-              unit="°"
-              onChange={(degrees) => saveScanSetting('droneYawDeg', degrees)}
+              id={`${tableGapInputId}-transit-speed`}
+              label="Transit speed"
+              title={`Speed of everything that is not scanning: the leg to the first barcode and the moves between runs (${SCAN_SPEED_MIN_MPS}–${TRANSIT_SPEED_MAX_MPS} m/s, default ${DEFAULT_SCAN_TRANSIT_SPEED_MPS} m/s). Written to DJI as the route speed.`}
+              value={transitSpeed}
+              min={SCAN_SPEED_MIN_MPS}
+              max={TRANSIT_SPEED_MAX_MPS}
+              steps={SCAN_ALTITUDE_STEPS}
+              fractionDigits={2}
+              unit="m/s"
+              onChange={(speed) => saveScanSetting('transitSpeedMps', speed)}
             />
+          )}
+
+          {barcode && (
+            <div className="bs-cell is-wide">
+              <span
+                className="bs-cell-label"
+                title="Heading the aircraft holds during the whole scan. The two courses are the installation direction of the panels, both ways along the rows."
+              >
+                Drone yaw
+              </span>
+              <div className="bs-cell-line">
+                <div className="bs-seg" role="radiogroup" aria-label="Drone yaw">
+                  {(
+                    [
+                      ['forward', forwardYaw],
+                      ['reverse', reverseYaw],
+                      ['manual', null],
+                    ] as [DroneYawMode, number | null][]
+                  ).map(([mode, course]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="radio"
+                      aria-checked={yawMode === mode}
+                      className={`bs-seg-btn${yawMode === mode ? ' is-selected' : ''}`}
+                      title={
+                        course === null
+                          ? 'Use the angle entered here instead of the panel direction'
+                          : `Fly with the aircraft pointing ${course.toFixed(1)}°`
+                      }
+                      onClick={() => updateScan({ droneYawMode: mode })}
+                    >
+                      {course === null ? 'Manual' : `${course.toFixed(1)}°`}
+                    </button>
+                  ))}
+                </div>
+                {yawMode === 'manual' ? (
+                  <span className="bs-number bs-number-sm">
+                    <input
+                      type="number"
+                      min={DRONE_YAW_MIN_DEG}
+                      max={DRONE_YAW_MAX_DEG}
+                      step="0.1"
+                      value={barcode.scan?.droneYawDeg ?? forwardYaw}
+                      aria-label="Aircraft heading in degrees"
+                      onChange={(e) => {
+                        const degrees = Number(e.target.value);
+                        if (!Number.isFinite(degrees)) return;
+                        saveScanSetting(
+                          'droneYawDeg',
+                          Math.min(DRONE_YAW_MAX_DEG, Math.max(DRONE_YAW_MIN_DEG, Math.round(degrees * 10) / 10))
+                        );
+                      }}
+                    />
+                    <span className="bs-unit">°</span>
+                  </span>
+                ) : (
+                  <span className="bs-muted">{droneYaw.toFixed(1)}° in the export</span>
+                )}
+              </div>
+            </div>
           )}
 
           <div className={`bs-cell${takeoffPoint ? '' : ' is-warning'}`}>
@@ -1410,6 +1487,32 @@ export const BarcodeScanPanel = ({ mission }: { mission: Mission }) => {
               </button>
             </div>
           </div>
+
+          {barcode && (
+            <div className="bs-cell">
+              <span
+                className="bs-cell-label"
+                title="Leave the takeoff point out of the route: the first waypoint is the first barcode. It is still needed as the ground every height is measured from."
+              >
+                Exclude takeoff point
+              </span>
+              <div className="bs-cell-line">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={excludesTakeoff}
+                  className={`bs-switch bs-switch-bare${excludesTakeoff ? ' is-on' : ''}`}
+                  onClick={() => updateScan({ excludeTakeoffPoint: !excludesTakeoff })}
+                  title="The aircraft climbs to the safe takeoff height and flies to the first barcode itself, so the takeoff point needs no waypoint of its own."
+                >
+                  <span className="bs-switch-track" aria-hidden="true">
+                    <span className="bs-switch-knob" />
+                  </span>
+                  <span className="bs-switch-text">{excludesTakeoff ? 'On' : 'Off'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {barcode && (
             <div className="bs-cell">

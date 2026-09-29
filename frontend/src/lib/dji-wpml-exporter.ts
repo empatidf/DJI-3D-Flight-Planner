@@ -7,7 +7,8 @@
 import JSZip from 'jszip';
 import type { FlightParameters, Mission, WaypointKind, WaypointOverride } from '../stores/mission-store';
 import { waypointKey } from '../stores/mission-store';
-import { DEFAULT_SCAN_HOVER_SECONDS, DEFAULT_SCAN_SPEED_MPS } from './barcode-panels';
+import { DEFAULT_SCAN_HOVER_SECONDS } from './barcode-panels';
+import { barcodeDroneYaw, barcodeSpeeds } from './barcode-scan-route';
 import {
   buildActionXml,
   getActionDef,
@@ -26,7 +27,13 @@ const EMPTY_POI = '0.000000,0.000000,0.000000';
 interface WaypointData {
   lon: number;
   lat: number;
+  /**
+    * Height relative to the takeoff point, for wpml:executeHeight, wpml:height
+    * and wpml:ellipsoidHeight alike: the route is flown in ALT mode
+    * (relativeToStartPoint) and nothing here is ever an ellipsoid height.
+    */
   alt: number;
+
   /** Per-waypoint settings that win over the mission-wide FlightParameters. */
   override?: WaypointOverride;
   /** Barcode Scan routes only: what the point is for. */
@@ -110,12 +117,13 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
         return;
       }
 
+      const kind = line.pointKinds?.[pointIndex];
       allWaypoints.push({
         lon,
         lat,
         alt,
         override: line.waypointOverrides?.[waypointKey(lon, lat)],
-        kind: line.pointKinds?.[pointIndex],
+        kind,
       });
     });
   });
@@ -144,12 +152,26 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
   const photoLens =
     isBarcode && /\b(wide|zoom|tele|thermal)\b/.test(mission.camera.name.toLowerCase()) ? 'wide' : undefined;
 
+  // Scanning is flown at the scan speed, everything else at the transit speed.
+  const speeds = isBarcode ? barcodeSpeeds(mission) : null;
+
   const normalizedWaypoints = allWaypoints.map((waypoint) => ({
     ...waypoint,
+    // The takeoff point is the zero of the route: every height is the terrain
+    // difference to it, exactly as a waypoint mission measures its own.
     alt: Number.isFinite(takeoffGround)
       ? waypoint.alt - takeoffGround
       : normalizedFirstAltitude + (waypoint.alt - firstWaypointAltitude),
     photoLens,
+    override:
+      speeds && waypoint.kind
+        ? {
+            ...waypoint.override,
+            speed:
+              waypoint.override?.speed ??
+              (waypoint.kind === 'barcode' ? speeds.scanSpeedMps : speeds.transitSpeedMps),
+          }
+        : waypoint.override,
   }));
 
   // A barcode scan flies at its own speed, with Aircraft Yaw on Manual at the
@@ -172,9 +194,13 @@ export const exportToDJI = async (mission: Mission): Promise<Blob> => {
         ...mission,
         parameters: {
           ...mission.parameters,
-          speed: scan?.flightSpeedMps ?? DEFAULT_SCAN_SPEED_MPS,
-          globalHeadingMode: 'manually',
-          droneYaw: scan?.droneYawDeg ?? mission.barcode?.structure?.installationBearing ?? mission.parameters.droneYaw,
+          // The route's own speed is the one away from the panels; a scan
+          // waypoint carries the slower scan speed itself (see below).
+          speed: barcodeSpeeds(mission).transitSpeedMps,
+          // "Custom": DJI Pilot 2 then flies the angle below. With "Manual"
+          // the route carries no heading and the aircraft is left at 0.
+          globalHeadingMode: 'smoothTransition',
+          droneYaw: barcodeDroneYaw(mission),
           waypointHoverEnabled: scan?.hoverEnabled === true,
           waypointHoverTime: scan?.hoverSeconds ?? DEFAULT_SCAN_HOVER_SECONDS,
           waypointTakePhoto: scan?.takePhotoEnabled === true,
@@ -721,7 +747,10 @@ const generateTemplateWaypointXML = (
       <wpml:index>${index}</wpml:index>
       <wpml:ellipsoidHeight>${waypoint.alt.toFixed(2)}</wpml:ellipsoidHeight>
       <wpml:height>${waypoint.alt.toFixed(2)}</wpml:height>
+      <wpml:useGlobalHeight>0</wpml:useGlobalHeight>
+      <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>
       <wpml:waypointSpeed>${speedValue}</wpml:waypointSpeed>
+      <wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>
       <wpml:waypointHeadingParam>
         <wpml:waypointHeadingMode>${headingMode}</wpml:waypointHeadingMode>
         <wpml:waypointHeadingAngle>${headingAngle}</wpml:waypointHeadingAngle>
@@ -729,6 +758,7 @@ const generateTemplateWaypointXML = (
         <wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>
         <wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex>
       </wpml:waypointHeadingParam>
+      <wpml:useGlobalTurnParam>0</wpml:useGlobalTurnParam>
       <wpml:waypointTurnParam>
         <wpml:waypointTurnMode>${turnMode}</wpml:waypointTurnMode>
         <wpml:waypointTurnDampingDist>${dampingDist}</wpml:waypointTurnDampingDist>

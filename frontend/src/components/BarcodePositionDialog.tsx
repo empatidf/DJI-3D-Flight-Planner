@@ -17,6 +17,8 @@ import {
   COMPASS_SIDE_LABELS,
   DEFAULT_CORNER_INSET_M,
   DEFAULT_LABEL_INSET_M,
+  DEFAULT_SKIP_PANELS,
+  MAX_SKIP_PANELS,
   defaultTopEdge,
   labelInsets,
   slotOffset,
@@ -93,6 +95,8 @@ export const BarcodePositionDialog = ({
   const [countAlong, setCountAlong] = useState<BarcodeLabelSettings['countAlong']>(initial?.countAlong ?? 'forward');
   const [upsideDown, setUpsideDown] = useState(initial?.upsideDown ?? false);
   const [fourCorners, setFourCorners] = useState(initial?.fourCorners ?? false);
+  const [manualPosition, setManualPosition] = useState(initial?.manualPosition ?? false);
+  const [skipInput, setSkipInput] = useState(() => String(initial?.skipPanels ?? DEFAULT_SKIP_PANELS));
   const [cornerInsetCm, setCornerInsetCm] = useState(() => formatCm(initial?.cornerInsetM ?? DEFAULT_CORNER_INSET_M));
   const [insetEndCm, setInsetEndCm] = useState(() => formatCm(labelInsets(initial ?? {}).fromEndM));
   const [insetSideCm, setInsetSideCm] = useState(() => formatCm(labelInsets(initial ?? {}).fromSideM));
@@ -119,6 +123,15 @@ export const BarcodePositionDialog = ({
     fromSideM: sideCm !== null ? sideCm / 100 : DEFAULT_LABEL_INSET_M,
   };
 
+  // Whole modules passed over between two scanned ones; empty or out of range
+  // keeps Apply shut rather than flying a number nobody meant.
+  const skipValue = Number(skipInput.trim());
+  const skipPanels =
+    skipInput.trim() !== '' && Number.isInteger(skipValue) && skipValue >= 0 && skipValue <= MAX_SKIP_PANELS
+      ? skipValue
+      : null;
+  const isSkipValid = !manualPosition || !fourCorners || skipPanels !== null;
+
   const cornerInsetM = (cornerCm ?? DEFAULT_CORNER_INSET_M * 100) / 100;
   const cornerPreviewInsets = {
     fromEndM: insets.fromEndM + cornerInsetM,
@@ -129,7 +142,7 @@ export const BarcodePositionDialog = ({
   const reverseCourse = (structure.installationBearing + 180) % 360;
 
   const apply = () => {
-    if (!isInsetValid) return;
+    if (!isInsetValid || !isSkipValid) return;
     onApply({
       slot,
       topEdge,
@@ -139,6 +152,8 @@ export const BarcodePositionDialog = ({
       insetFromSideM: insets.fromSideM,
       fourCorners,
       cornerInsetM: (cornerCm ?? DEFAULT_CORNER_INSET_M * 100) / 100,
+      manualPosition: fourCorners && manualPosition,
+      skipPanels: skipPanels ?? DEFAULT_SKIP_PANELS,
       // Set in the Flight Planning panel, next to the string gap.
       nextPanelGapM: initial?.nextPanelGapM,
     });
@@ -163,9 +178,14 @@ export const BarcodePositionDialog = ({
   // the modules on either side of it keep their own corner points. The
   // alternating pattern simply runs on, so a break would only mislead.
   const patternBreak = fourCorners ? 16 : 0;
+  // Manual position draws a point one module beyond each end of the row, so
+  // the strip leaves that much room on both sides.
+  const showsLeads = manualPosition && fourCorners;
+  const patternPitch = patternModuleWidth + PATTERN_GAP_PX;
+  const leadRoom = showsLeads ? 2 * patternPitch : 0;
   const patternTotal =
-    PATTERN_MODULES * patternModuleWidth + (PATTERN_MODULES - 1) * PATTERN_GAP_PX + patternBreak;
-  const patternX0 = (PATTERN_WIDTH - patternTotal) / 2;
+    PATTERN_MODULES * patternModuleWidth + (PATTERN_MODULES - 1) * PATTERN_GAP_PX + patternBreak + leadRoom;
+  const patternX0 = (PATTERN_WIDTH - patternTotal) / 2 + leadRoom / 2;
   const patternY0 = 22;
   const patternModules = Array.from({ length: PATTERN_MODULES }, (_, index) => {
     const afterBreak = fourCorners && index >= PATTERN_BREAK_AFTER;
@@ -206,6 +226,17 @@ export const BarcodePositionDialog = ({
         y: patternY0 + PATTERN_MODULE_HEIGHT / 2 - offset.alongTopM * patternScale,
       });
     });
+  }
+
+  // The two points beyond the ends of the row: no barcode is read there, the
+  // aircraft only passes them at scan height on its way in and out.
+  const leadPreviewPoints: { x: number; y: number }[] = [];
+  if (showsLeads && patternPoints.length > 0) {
+    const left = Math.min(...patternPoints.map((point) => point.x)) - patternPitch;
+    const right = Math.max(...patternPoints.map((point) => point.x)) + patternPitch;
+    for (const y of new Set(patternPoints.map((point) => point.y))) {
+      leadPreviewPoints.push({ x: left, y }, { x: right, y });
+    }
   }
 
   return createPortal(
@@ -389,6 +420,57 @@ export const BarcodePositionDialog = ({
                       : `Enter 0–${maxCornerCm} cm.`}
                   </p>
                 </fieldset>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={manualPosition}
+                  className={`bpd-mode${manualPosition ? ' is-on' : ''}`}
+                  onClick={() => setManualPosition(!manualPosition)}
+                >
+                  <span className="bpd-mode-track" aria-hidden="true">
+                    <span className="bpd-mode-knob" />
+                  </span>
+                  <span className="bpd-mode-text">
+                    <strong>Manual position</strong>
+                    <span>
+                      Fly only some of the scan points, for a remote controller that cannot hold a route with thousands
+                      of waypoints. The route is planned as it otherwise would be, heights and all, and points are left
+                      out of it afterwards.
+                    </span>
+                  </span>
+                </button>
+
+                {manualPosition && (
+                  <fieldset className="bpd-field">
+                    <legend>Skip waypoints</legend>
+                    <div className="bpd-inset-row">
+                      <label className="bpd-inset">
+                        <span className="bpd-inset-label">Passed over</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max={MAX_SKIP_PANELS}
+                          step="1"
+                          inputMode="numeric"
+                          aria-label="Scan points passed over between two flown ones"
+                          aria-invalid={skipPanels === null}
+                          value={skipInput}
+                          onChange={(event) => setSkipInput(event.target.value)}
+                        />
+                        <span className="bpd-inset-unit">points</span>
+                      </label>
+                    </div>
+                    <p className="bpd-hint">
+                      {skipPanels !== null
+                        ? `${
+                            skipPanels === 0
+                              ? 'Every scan point is flown, as without this mode.'
+                              : `One scan point of every ${skipPanels + 1} is flown along a barcode line, the first and the last one always.`
+                          } Each line also gains a point one module beyond either end, at the height of the barcode next to it, so the aircraft is already steady when it passes the real one.`
+                        : `Enter a whole number from 0 to ${MAX_SKIP_PANELS}.`}
+                    </p>
+                  </fieldset>
+                )}
               </>
             ) : (
               <>
@@ -563,6 +645,11 @@ export const BarcodePositionDialog = ({
                     strokeWidth={0.8}
                   />
                 ))}
+                {leadPreviewPoints.map((point, index) => (
+                  <circle key={`lead${index}`} cx={point.x} cy={point.y} r="3.4" className="bpd-pattern-lead">
+                    <title>Passed at scan height, no barcode read</title>
+                  </circle>
+                ))}
               </svg>
             </div>
           </div>
@@ -572,7 +659,12 @@ export const BarcodePositionDialog = ({
           <button type="button" className="bpd-btn" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="bpd-btn is-primary" onClick={apply} disabled={!isInsetValid}>
+          <button
+            type="button"
+            className="bpd-btn is-primary"
+            onClick={apply}
+            disabled={!isInsetValid || !isSkipValid}
+          >
             Apply
           </button>
         </footer>
