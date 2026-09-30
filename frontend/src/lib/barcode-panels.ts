@@ -1629,16 +1629,13 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
     const minAcross = Math.min(...chain.map((table) => table.minAcross));
     const maxAcross = Math.max(...chain.map((table) => table.maxAcross));
 
-    // In front means the run lies on the line the aircraft is already on,
-    // ahead of it or behind it. Then the nearer end is taken, so no distance
-    // is flown twice. A run to the left or right is started at the chosen
-    // corner instead, so every string is scanned the same way round.
-    const inFront =
-      previousEnd !== null &&
-      previousEnd[1] >= minAcross - 0.5 * moduleAcross &&
-      previousEnd[1] <= maxAcross + 0.5 * moduleAcross;
-
-    const lineSign = previousEnd && inFront ? nearerSign(previousEnd[1], minAcross, maxAcross) : acrossSign;
+    // Every run after the first is entered at the corner nearest to where the
+    // last one ended, so the aircraft snakes on instead of returning. A table
+    // with an odd number of lines — a 2P table has three, its two outer edges
+    // and the border its rows share — ends at the far end of its run, and
+    // starting the next one at a fixed corner would fly its whole length twice.
+    // The chosen start corner still decides where the first run begins.
+    const lineSign = previousEnd ? nearerSign(previousEnd[1], minAcross, maxAcross) : acrossSign;
     // First line: the one furthest towards lineSign.
     items.sort((a, b) => (b.across - a.across) * lineSign);
     const lines: ScanItem[][] = [];
@@ -1648,7 +1645,7 @@ export const planScanPath = (corners: ArrayLike<number>, options: ScanPathOption
     });
 
     let endSign = alongSign;
-    if (previousEnd && inFront) {
+    if (previousEnd) {
       const alongValues = lines[0].map((item) => item.along);
       endSign = nearerSign(previousEnd[0], Math.min(...alongValues), Math.max(...alongValues));
     }
